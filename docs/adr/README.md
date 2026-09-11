@@ -16,5 +16,5 @@
 | [0002](0002-hybrid-recording-granularity.md) | 記録はハイブリッド粒度で保存する | Accepted |
 | [0003](0003-monotonic-clock-with-wall-clock-anchor.md) | 記録は連続単調時計と定期的な実時刻アンカーで時刻を持つ | Accepted |
 | [0004](0004-sqlite-storage.md) | 記録の保存先にSQLiteを使う | Accepted |
-| [0005](0005-single-menubar-app.md) | エージェントとUIを単一のメニューバー常駐アプリとして構成する | Proposed |
+| [0005](0005-single-app-bundle.md) | エージェントとUIを単一の .app バンドルにまとめ、メニューバーに常駐させる | Accepted |
 | [0006](0006-file-exchange-before-p2p.md) | 突合は初期版ではファイル交換で行い、P2Pは後回しにする | Proposed |
