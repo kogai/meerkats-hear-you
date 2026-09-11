@@ -17,3 +17,8 @@ description = "List available audio devices"
 dir = "experiments/mac-mic-verification"
 depends = ["install"]
 run = "python3 verify.py --list-devices"
+
+[tasks.xcorr]
+description = "Measure how precisely 1s-aggregated level series can be aligned"
+dir = "experiments"
+run = "python3 xcorr-alignment-resolution.py"
