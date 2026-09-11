@@ -1,0 +1,88 @@
+name: spike-bundle
+
+# ADR-0001 / ADR-0005 の前提のうち、GUIセッションを必要としない部分を検証する。
+#
+# ここで検証できるのはビルドとバンドルと署名まで。TCCの許可(マイク権限の取得と維持)は
+# ホストランナーにGUIセッションもマイクも無いため検証できず、実機での確認が必要になる。
+# 詳細は experiments/macos-app-bundle-spike/README.md を参照。
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/macos-app-bundle-spike/**'
+      - '.github/workflows/spike-bundle.yml'
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: experiments/macos-app-bundle-spike
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ツールチェインの確認
+        run: |
+          swift --version
+          xcodebuild -version || true
+          sw_vers
+
+      - name: ビルドとバンドル組み立て
+        run: ./build.sh
+
+      - name: Info.plist が妥当か
+        run: plutil -lint build/LevelSpike.app/Contents/Info.plist
+
+      - name: バンドルの構造
+        run: |
+          find build/LevelSpike.app -type f | sort
+          echo "--- 実行ファイルのアーキテクチャ ---"
+          file build/LevelSpike.app/Contents/MacOS/LevelSpike
+
+      - name: 署名の検証
+        run: |
+          codesign --verify --strict --verbose=2 build/LevelSpike.app
+          echo "--- LSUIElement が効いているか ---"
+          plutil -extract LSUIElement raw build/LevelSpike.app/Contents/Info.plist
+
+      # ここからが本題に近い部分。ad-hoc署名の同一性(CDHash)がリビルドで変わるかを見る。
+      # 変わるなら、TCCから見て別のアプリになり許可が失われうるということになる。
+      - name: "CDHash を記録 (A = 初回ビルド)"
+        run: |
+          codesign -dvvv build/LevelSpike.app 2>&1 | grep -E '^CDHash=' | tee /tmp/cdhash_a
+
+      - name: 変更なしで再ビルド (B)
+        run: |
+          ./build.sh > /dev/null
+          codesign -dvvv build/LevelSpike.app 2>&1 | grep -E '^CDHash=' | tee /tmp/cdhash_b
+
+      - name: コードを変更して再ビルド (C)
+        run: |
+          sed -i '' 's/let captureSeconds = 3.0/let captureSeconds = 3.5/' Sources/LevelSpike/main.swift
+          ./build.sh > /dev/null
+          codesign -dvvv build/LevelSpike.app 2>&1 | grep -E '^CDHash=' | tee /tmp/cdhash_c
+
+      - name: CDHash の比較
+        run: |
+          A=$(cat /tmp/cdhash_a); B=$(cat /tmp/cdhash_b); C=$(cat /tmp/cdhash_c)
+          echo "A (初回ビルド)       : $A"
+          echo "B (変更なしで再build) : $B"
+          echo "C (変更ありで再build) : $C"
+          echo
+          if [ "$A" = "$B" ]; then
+            echo "A == B : 変更なしの再ビルドでは同一性が変わらない"
+          else
+            echo "A != B : 変更していなくても再ビルドで同一性が変わる"
+            echo "         → ad-hoc署名のままだと、ビルドし直すだけでTCCの許可を失う可能性が高い"
+          fi
+          if [ "$B" = "$C" ]; then
+            echo "B == C : コードを変えても同一性が変わらない(想定外)"
+          else
+            echo "B != C : コードを変えると同一性が変わる(想定どおり)"
+            echo "         → 開発中は安定した署名の同一性が必要になる可能性が高い"
+          fi
+          echo
+          echo "注意: これはCDHashの挙動から推測できる範囲であって、TCCが実際に許可を"
+          echo "      維持するかどうかは実機でしか確認できない。"
