@@ -8,10 +8,9 @@
 ### mise を使う場合(推奨)
 
 [mise](https://mise.jdx.dev/) が入っていれば、Pythonのバージョン管理・依存インストール・実行を
-1コマンドで行える。
+1コマンドで行える(タスク定義はリポジトリルートの `.mise.toml` にあるので、リポジトリ内のどこからでも実行可能)。
 
 ```bash
-cd experiments/mac-mic-verification
 mise run verify
 ```
 
