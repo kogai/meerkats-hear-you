@@ -5,26 +5,40 @@
 
 ## 実行方法
 
+### mise を使う場合(推奨)
+
+[mise](https://mise.jdx.dev/) が入っていれば、Pythonのバージョン管理・依存インストール・実行を
+1コマンドで行える。
+
 ```bash
 cd experiments/mac-mic-verification
-bash run.sh
+mise run verify
 ```
 
 - 初回はマイクアクセスの許可ダイアログが出ることがあります。許可してください。
-- 既定では15秒間録音します(秒数を変えたい場合は `bash run.sh --duration 20`)。
+- 既定では15秒間録音します(秒数を変えたい場合は `mise run verify -- --duration 20`)。
 - 録音中は普段の会話のように、話したり間を置いたりしてください。
 
 デバイス一覧だけ確認したい場合:
 
 ```bash
-bash run.sh --list-devices
+mise run list-devices
 ```
 
 特定のデバイス(例: BlackHoleなどのループバックデバイス)から録音したい場合:
 
 ```bash
-bash run.sh --device <一覧で表示されたインデックス番号>
+mise run verify -- --device <一覧で表示されたインデックス番号>
 ```
+
+### mise を使わない場合
+
+```bash
+cd experiments/mac-mic-verification
+bash run.sh
+```
+
+オプションは同様に `bash run.sh --list-devices` / `bash run.sh --device <番号>` などで指定できる。
 
 ## 出力
 
