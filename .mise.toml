@@ -22,3 +22,8 @@ run = "python3 verify.py --list-devices"
 description = "Measure how precisely 1s-aggregated level series can be aligned"
 dir = "experiments"
 run = "python3 xcorr-alignment-resolution.py"
+
+[tasks.spike]
+description = "Build a signed .app without Xcode and check it can hold mic permission"
+dir = "experiments/macos-app-bundle-spike"
+run = "./run.sh"
