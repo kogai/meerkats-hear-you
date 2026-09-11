@@ -72,14 +72,14 @@ def rms_dbfs(x):
     rms = np.sqrt(np.mean(x ** 2))
     if rms <= 0:
         return DB_FLOOR
-    return max(20 * np.log10(rms), DB_FLOOR)
+    return float(max(20 * np.log10(rms), DB_FLOOR))
 
 
 def power_mean_dbfs(levels_db):
     if len(levels_db) == 0:
         return None
     power = 10 ** (np.asarray(levels_db) / 10.0)
-    return 10 * np.log10(np.mean(power) + 1e-300)
+    return float(10 * np.log10(np.mean(power) + 1e-300))
 
 
 def clip_ratio(x, threshold=0.98):
