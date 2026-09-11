@@ -122,8 +122,8 @@ func runSpike() -> [String: Any] {
     do {
         // 一時オブジェクトのまま run() を呼ぶと、タップ内の weak self が即座にnilになり
         // レベルが1フレームも集まらない。強参照で保持しておく必要がある。
-        let capture = LevelCapture()
-        let result = try capture.run(seconds: captureSeconds)
+        let levelCapture = LevelCapture()
+        let result = try levelCapture.run(seconds: captureSeconds)
         let levels = result.levels
         // 全フレームがフロア値なら、権限はあるが実際には無音しか来ていない状態。
         let allAtFloor = !levels.isEmpty && levels.allSatisfy { $0 <= -89.999 }
