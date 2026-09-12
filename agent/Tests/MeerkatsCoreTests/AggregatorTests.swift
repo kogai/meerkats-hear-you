@@ -50,7 +50,7 @@ final class AggregatorTests: XCTestCase {
         for index in 0 ..< 50 {
             record = aggregator.push(metrics(us: Int64(index) * 20_000, dbfs: -30, speech: index < 20))
         }
-        XCTAssertEqual(record?.speechRatio, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(record!.speechRatio, 0.4, accuracy: 0.0001)
     }
 
     func testClipRatioIsAveraged() {
@@ -70,7 +70,7 @@ final class AggregatorTests: XCTestCase {
             _ = aggregator.push(metrics(us: Int64(index) * 20_000, dbfs: -25))
         }
         let record = aggregator.flush()
-        XCTAssertEqual(record?.meanDbfs, -25, accuracy: 0.0001)
+        XCTAssertEqual(record!.meanDbfs, -25, accuracy: 0.0001)
         XCTAssertNil(aggregator.flush(), "flush後は空になる")
     }
 
