@@ -15,6 +15,9 @@ public struct AudioProcess: Equatable {
     ///
     /// **起動しているかどうかでは足りない。** 会議アプリは会議をしていなくても常駐している。
     /// 鳴っていないものを録ると、無音がそのまま「相手が黙っている」として記録に残る。
+    ///
+    /// **この値の意味はまだ確かめていない。** IOが動いているかを指すのか、非ゼロのサンプルが
+    /// 出ているかを指すのかで設計の成否が変わる(ADR-0008の未検証の前提)。
     public var isRunningOutput: Bool
 
     public init(pid: Int32, bundleId: String?, name: String, isRunningOutput: Bool) {
@@ -22,6 +25,27 @@ public struct AudioProcess: Equatable {
         self.bundleId = bundleId
         self.name = name
         self.isRunningOutput = isRunningOutput
+    }
+}
+
+/// 会議アプリ1つ。
+///
+/// **接頭辞とアプリは1対1ではない。** Webex は製品が1つなのにバンドルIDが3系統あり、
+/// 接頭辞をアプリの同一性として使うと、同じ Webex のプロセスどうしを「別の会議アプリ」として
+/// 報告することになる。同一性はここで明示的に持つ。
+public struct ConferencingApp: Equatable {
+    /// 表示に使う名前。
+    public var name: String
+    /// このアプリのものとみなすバンドルIDの**前置**。
+    ///
+    /// 前方一致にしてあるのは補助プロセス対策である。音声が本体ではなく
+    /// `us.zoom.xos.helper` のような子プロセスに出ている可能性を ADR-0008 が
+    /// 未検証の前提として挙げており、完全一致だとその場合に一つも拾えない。
+    public var bundleIdPrefixes: [String]
+
+    public init(name: String, bundleIdPrefixes: [String]) {
+        self.name = name
+        self.bundleIdPrefixes = bundleIdPrefixes
     }
 }
 
@@ -36,7 +60,9 @@ public enum TapSelection: Equatable {
     /// **混ぜて録るという選択肢は無い。** 途切れがどちらのものか分からない記録は、
     /// ADR-0008 が避けようとしたもの、つまり解釈できない記録そのものになる。
     /// 選ばなかったほうも持って返すのは、表示で「Zoom を録っています」と言えるようにするため。
-    /// 黙って片方を捨てると、利用者は録れていないことに気づけない。
+    ///
+    /// **1本しか録らないこと自体は決着していない。** ADR-0013 が「鳴っているアプリごとに
+    /// タップを張る」を提案していて、通ればこの型は対象の一覧を返す形になる。
     case tapWithOthersSounding(AudioProcess, others: [AudioProcess])
 
     /// 実際に録る対象。呼び出し側が2つのケースを毎回ほどかずに済むようにする。
@@ -56,47 +82,47 @@ public enum TapSelection: Equatable {
 /// ADR-0008 の限定が効かなくなる。動画も広告も同じ記録に混ざり、途切れが相手のものか
 /// どうかを見分けられない。対応するならタブ単位で分ける手段が要り、それは別の決定になる。
 public enum ConferencingApps {
-    /// 会議アプリとみなすバンドルIDの**前置**。
-    ///
-    /// 前方一致にしてあるのは補助プロセス対策である。音声が本体ではなく
-    /// `us.zoom.xos.helper` のような子プロセスに出ている可能性を ADR-0008 が
-    /// 未検証の前提として挙げており、完全一致だとその場合に一つも拾えない。
-    ///
-    /// 並びは優先順位そのもの。**会議専用のアプリを、通話もできるチャットアプリより先に置く。**
-    /// 両方が鳴っているとき、会議をしている確率が高いのは前者だからで、それ以上の根拠は無い。
-    /// 実機で外すようなら、ここを並べ替えれば済むようにしてある。
-    /// **この一覧は網羅ではない。** バンドルIDを知っているものしか書けず、社内ツールや
+    /// **この一覧は網羅ではない。** バンドルIDを確かめられたものしか書けず、社内ツールや
     /// 地域ごとのサービスは原理的に漏れる。漏れたアプリは録られないだけで、誤って録ることは
     /// 無い。最終的には利用者が自分で足せる形が要るが、それは別の決定になる。
-    public static let bundleIdPrefixes: [String] = [
-        // 会議専用
-        "us.zoom.xos",                  // Zoom
-        "com.microsoft.teams",          // Microsoft Teams (teams2 も前方一致で入る)
-        "Cisco-Systems.Spark",          // Webex アプリ。com.cisco. では**始まらない**
-        "com.cisco.webexmeetingsapp",   // Webex Meetings
-        "com.webex.meetingmanager",     // Webex Meetings (旧)
-        "com.amazon.Chime",             // Amazon Chime
-        "com.logmein.GoToMeeting",      // GoToMeeting
-        "com.apple.FaceTime",           // FaceTime
-        // 通話もできるチャットアプリ
-        "com.tinyspeck.slackmacgap",    // Slack (ハドル)
-        "com.hnc.Discord",              // Discord
-        "com.skype.skype",              // Skype
+    ///
+    /// 並びは優先順位そのもの。**仕事の会議に使われるものを先に置く。** 複数が同時に
+    /// 鳴っているとき、記録したいのはそちらだからで、それ以上の根拠は無い。実機で外すようなら
+    /// 並べ替えれば済む。
+    public static let known: [ConferencingApp] = [
+        ConferencingApp(name: "Zoom", bundleIdPrefixes: ["us.zoom.xos"]),
+        // classic と new Teams (teams2) の両方に当たる。同じ製品なので畳んでよい。
+        ConferencingApp(name: "Microsoft Teams", bundleIdPrefixes: ["com.microsoft.teams"]),
+        // 製品は1つだがバンドルIDが3系統ある。Webex アプリは com.cisco. で**始まらない**。
+        ConferencingApp(name: "Webex", bundleIdPrefixes: [
+            "Cisco-Systems.Spark",
+            "com.cisco.webexmeetingsapp",
+            "com.webex.meetingmanager",
+        ]),
+        ConferencingApp(name: "Slack", bundleIdPrefixes: ["com.tinyspeck.slackmacgap"]),
+        ConferencingApp(name: "Discord", bundleIdPrefixes: ["com.hnc.Discord"]),
+        // 仕事の会議より後ろに置く。同時に鳴っているとき、録りたいのは仕事のほう。
+        ConferencingApp(name: "FaceTime", bundleIdPrefixes: ["com.apple.FaceTime"]),
     ]
 
     /// 鳴っている会議アプリから、録る一つを決める。
+    ///
+    /// **これは選定だけを行う。** `isRunningOutput` をここで使うのは対象を選ぶためであって、
+    /// いったん張ったタップをこの値で外してよいという意味ではない。外すと「相手が黙っている」と
+    /// 「録れていない」が区別できなくなる(ADR-0008の未検証の前提)。継続の判断は、
+    /// タップを保持する側が状態を持って行う。
     ///
     /// - Parameter processes: Core Audio が持っているプロセスの一覧。順序は問わない。
     public static func select(from processes: [AudioProcess]) -> TapSelection {
         let ranked = processes
             .filter { $0.isRunningOutput }
-            .compactMap { process -> (rank: Int, process: AudioProcess)? in
-                guard let rank = priority(of: process) else { return nil }
-                return (rank, process)
+            .compactMap { process -> (app: Int, process: AudioProcess)? in
+                guard let app = appIndex(of: process) else { return nil }
+                return (app, process)
             }
-            // 同じ優先順位のプロセスが複数あるとき、並びが起動順で揺れると
+            // 同じアプリのプロセスが複数あるとき、並びが起動順で揺れると
             // 録る対象が実行のたびに変わる。pid で縛って決定的にする。
-            .sorted { ($0.rank, $0.process.pid) < ($1.rank, $1.process.pid) }
+            .sorted { ($0.app, $0.process.pid) < ($1.app, $1.process.pid) }
 
         guard let chosen = ranked.first else { return .idle }
 
@@ -104,10 +130,10 @@ public enum ConferencingApps {
         // 畳まないと、Zoom本体とそのヘルパーが両方鳴っているだけで「他の会議アプリも
         // 鳴っています」と表示することになる。補助プロセスを拾うために前方一致にした以上、
         // ヘルパーを持つアプリでは**常に**その嘘が出る。
-        var seenRanks: Set<Int> = [chosen.rank]
+        var seenApps: Set<Int> = [chosen.app]
         var others: [AudioProcess] = []
-        for entry in ranked.dropFirst() where !seenRanks.contains(entry.rank) {
-            seenRanks.insert(entry.rank)
+        for entry in ranked.dropFirst() where !seenApps.contains(entry.app) {
+            seenApps.insert(entry.app)
             others.append(entry.process)
         }
 
@@ -116,15 +142,17 @@ public enum ConferencingApps {
             : .tapWithOthersSounding(chosen.process, others: others)
     }
 
-    /// 会議アプリなら `bundleIdPrefixes` での位置を、そうでなければ nil を返す。
-    ///
-    /// 返す位置は優先順位であると同時に、**アプリの同一性**でもある。同じ位置に当たった
-    /// プロセスは同じアプリのものとみなす。
+    /// このプロセスがどの会議アプリのものかを `known` での位置で返す。会議アプリでなければ nil。
     ///
     /// 照合は大文字小文字を区別する。バンドルIDは識別子であって表示名ではなく、
     /// `Cisco-Systems.Spark` のように大文字を含むものが実在する。
-    static func priority(of process: AudioProcess) -> Int? {
+    static func appIndex(of process: AudioProcess) -> Int? {
         guard let bundleId = process.bundleId else { return nil }
-        return bundleIdPrefixes.firstIndex { bundleId.hasPrefix($0) }
+        return known.firstIndex { app in
+            app.bundleIdPrefixes.contains { bundleId.hasPrefix($0) }
+        }
     }
+
+    /// 一覧に載っている全ての接頭辞。不変条件の確認に使う。
+    static var allPrefixes: [String] { known.flatMap(\.bundleIdPrefixes) }
 }
