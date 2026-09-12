@@ -1,0 +1,166 @@
+name: release
+
+# 配布用のバイナリを作る(ADR-0007)。
+#
+# タグを打つと Release として公開し、main への push ではアーティファクトに残すだけにする。
+# 常駐アプリを勝手に更新し続けると、いつの版が動いているのか利用者が分からなくなるため。
+#
+# push トリガに paths フィルタを付けていないのは、branches と tags の両方を書いたトリガに
+# paths を足すとタグ側にも同じ条件がかかるため。agent/ を触らないコミットにタグを打った瞬間に
+# リリースが出なくなる。main での数分の無駄より、タグが黙って効かないほうが高くつく。
+#
+# pull_request でも公開以外の全段を通す。キーチェーンの取り込みや universal の表明は
+# ここにしか無く、タグを打つまで一度も動かないままだと、リリースを切ろうとした瞬間に
+# 壊れていることが分かる。pull_request のフィルタは push と独立しているので paths を付けられる。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'agent/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: agent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: バージョンを決める
+        id: meta
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            ASSET="Meerkats-${VERSION}-universal.zip"
+          else
+            # タグではないので版番号を名乗らない。どのコミットかは成果物の名前で示す。
+            VERSION="0.0.0"
+            ASSET="Meerkats-$(git rev-parse --short HEAD)-universal.zip"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: 署名の証明書を取り込む
+        id: signing
+        env:
+          CERTIFICATE_P12: ${{ secrets.SIGNING_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          if [ -n "$NOTARY_PASSWORD" ]; then
+            echo "notarize=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarize=no" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -z "$CERTIFICATE_P12" ]; then
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            echo "::warning::証明書が無いためad-hoc署名で作ります。この成果物は、次の更新でマイクの許可を失います(ADR-0007)。"
+            exit 0
+          fi
+
+          # 一時キーチェーンに入れる。ランナーは使い捨てだが、既定のキーチェーンを
+          # 触らないほうが後片付けを考えなくて済む。
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+          # これが無いと codesign が実行のたびにパスワードを聞きに来て固まる。
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk 'NR==1 {print $2}')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::証明書は取り込めましたが、コード署名に使える identity がありません。"
+            exit 1
+          fi
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: ビルドと署名
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD: ${{ github.run_number }}
+          UNIVERSAL: '1'
+          # 公証に出すときだけ入れる。hardened runtime はマイクが取れるかが未検証なので
+          # (ADR-0007)、それが必須になる経路以外では実機で確認済みの条件のままにしておく。
+          HARDENED: ${{ steps.signing.outputs.identity != '-' && steps.signing.outputs.notarize == 'yes' && '1' || '0' }}
+        run: ./build.sh
+
+      - name: 両方のアーキテクチャが入っているか
+        run: |
+          ARCHS="$(lipo -archs build/Meerkats.app/Contents/MacOS/Meerkats)"
+          echo "アーキテクチャ: $ARCHS"
+          for want in arm64 x86_64; do
+            case " $ARCHS " in
+              *" $want "*) ;;
+              *) echo "::error::$want が含まれていません。受け取る側のMacで起動できません。"; exit 1 ;;
+            esac
+          done
+
+      - name: 署名と entitlement を確認
+        run: |
+          codesign --verify --strict --verbose=2 build/Meerkats.app
+          codesign -d --entitlements - --xml build/Meerkats.app 2>/dev/null | plutil -p - || \
+            echo "entitlement なし (ad-hoc署名)"
+
+      - name: 公証してステープルする
+        if: steps.signing.outputs.identity != '-' && steps.signing.outputs.notarize == 'yes'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent build/Meerkats.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" --wait
+          # ステープルしておけば、受け取る側がオフラインでも検証が通る。
+          xcrun stapler staple build/Meerkats.app
+
+      - name: zip に固める
+        run: |
+          # ditto を使う。zip コマンドだと署名に必要なメタデータが落ちる。
+          ditto -c -k --keepParent build/Meerkats.app "${{ steps.meta.outputs.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.asset }}
+          path: agent/${{ steps.meta.outputs.asset }}
+          retention-days: 14
+
+      - name: Release を公開
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTARIZED: ${{ steps.signing.outputs.identity != '-' && steps.signing.outputs.notarize == 'yes' }}
+        run: |
+          if [ "$NOTARIZED" = "true" ]; then
+            OPEN_NOTE="ダウンロードして展開し、開いて起動してください。"
+          else
+            OPEN_NOTE=$'公証していないため、初回だけ Finder で右クリックして「開く」を選んでください。\n(または `xattr -d com.apple.quarantine Meerkats.app`)'
+          fi
+          gh release create "$GITHUB_REF_NAME" "${{ steps.meta.outputs.asset }}" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "$(printf '%s\n\n初回起動時にマイクの許可を求められます。許可すると、メニューバーに現在のレベルが出ます。\n\nApple Silicon と Intel の両方で動きます。macOS 13 以降が必要です。' "$OPEN_NOTE")"
