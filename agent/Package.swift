@@ -3,11 +3,15 @@ import PackageDescription
 
 // MeerkatsCore は AVFoundation に依存しない純粋ロジックのみを置く。
 // 音声キャプチャは実機でしか動かせないため、検証できる部分をここに寄せている。
+//
+// MeerkatsAgent は実機依存の薄いシェル。AVAudioEngine・AppKit・SwiftUI に触れるのはこちらだけで、
+// 判断は持たない。CIでビルドと署名までは確かめられるが、マイクを伴う動作は実機でしか確認できない。
 let package = Package(
     name: "Meerkats",
     platforms: [.macOS(.v13)],
     targets: [
         .target(name: "MeerkatsCore"),
+        .executableTarget(name: "MeerkatsAgent", dependencies: ["MeerkatsCore"]),
         .testTarget(name: "MeerkatsCoreTests", dependencies: ["MeerkatsCore"]),
     ]
 )
