@@ -38,6 +38,8 @@ public final class MenuBarController {
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
+    /// メニューから開く分析ウインドウの起動口。
+    public var onOpenAnalysis: (() -> Void)?
     public var onQuit: (() -> Void)?
 
     private func refresh() {
@@ -55,6 +57,12 @@ public final class MenuBarController {
         }
         menu.addItem(.separator())
 
+        let analysis = NSMenuItem(
+            title: "記録を見る…", action: #selector(openAnalysis), keyEquivalent: ""
+        )
+        analysis.target = self
+        menu.addItem(analysis)
+
         let quit = NSMenuItem(title: "終了", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -62,5 +70,6 @@ public final class MenuBarController {
         statusItem.menu = menu
     }
 
+    @objc private func openAnalysis() { onOpenAnalysis?() }
     @objc private func quit() { onQuit?() }
 }

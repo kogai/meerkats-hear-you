@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: RecordingStore?
     private var capture: AudioCapture?
     private var menuBar: MenuBarController?
+    private var analysis: AnalysisWindowController?
     private let liveState = LiveState()
 
     private var sessionId: Int64 = 0
@@ -72,6 +73,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             try capture.start()
             self.capture = capture
+
+            // 記録が始まってから開けるようにする。ストリームIDが決まる前に開くと、
+            // 空のウインドウが出て「記録されていない」と誤解させる。
+            analysis = AnalysisWindowController(
+                store: store,
+                streamId: streamId,
+                frameDurationUs: configuration.frameDurationUs
+            )
+            menuBar?.onOpenAnalysis = { [weak self] in self?.analysis?.show() }
         } catch {
             report("記録を開始できませんでした: \(error)")
         }
