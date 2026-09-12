@@ -20,4 +20,5 @@
 | [0006](0006-file-exchange-before-p2p.md) | 突合は初期版ではファイル交換で行い、P2Pは後回しにする | Accepted |
 | [0007](0007-signed-release-from-ci.md) | 配布用バイナリはCIで署名済みとして作り、タグで公開する | Accepted |
 | [0008](0008-process-tap-for-received-audio.md) | 受信音声はCore Audioのプロセスタップで取得し、会議アプリに限定する | Accepted |
+| [0009](0009-record-exchange-transport.md) | 記録の交換経路はNAT越えのP2Pとし、ランデブーだけを置く | Accepted |
 | [0010](0010-recording-floor-broadband-only.md) | 記録・送付する水準を Bolthole と定め、帯域を分けない | Accepted |
