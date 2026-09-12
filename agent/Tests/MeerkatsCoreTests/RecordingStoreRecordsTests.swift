@@ -101,17 +101,22 @@ final class RecordingStoreRecordsTests: XCTestCase {
 
     /// 詳細層はBLOBとして保存され、読み出すとフレームに戻ること。
     func testDetailWindowRoundTripThroughBlob() throws {
-        let frames = (0 ..< 100).map { index in
-            FrameMetrics(
-                monotonicUs: Int64(index) * 20_000,
-                dbfs: -30 - Double(index % 10),
-                clipRatio: index % 20 == 0 ? 0.5 : 0,
-                isSpeech: index % 3 == 0
+        // 型推論が重くならないよう、要素ごとに明示的に組み立てる。
+        var frames: [FrameMetrics] = []
+        for index in 0 ..< 100 {
+            let clip: Double = index % 20 == 0 ? 0.5 : 0.0
+            frames.append(
+                FrameMetrics(
+                    monotonicUs: Int64(index) * 20_000,
+                    dbfs: -30.0 - Double(index % 10),
+                    clipRatio: clip,
+                    isSpeech: index % 3 == 0
+                )
             )
         }
         try store.appendDetailWindow(
             streamId: streamId,
-            DetailWindow(startUs: 0, trigger: AnomalyKind.dropout.rawValue, frames: frames)
+            DetailWindow(startUs: 0, trigger: "dropout", frames: frames)
         )
 
         let windows = try store.detailWindows(streamId: streamId, frameDurationUs: 20_000)
