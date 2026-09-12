@@ -47,7 +47,6 @@ public final class RecordingPipeline {
 
     private var pendingSeconds: [SecondRecord] = []
     private var frameIndex: Int64 = 0
-    private var lastFlushUs: Int64 = 0
 
     public init(
         configuration: Configuration = Configuration(),
@@ -93,10 +92,17 @@ public final class RecordingPipeline {
         }
 
         guard let record = aggregator.push(metrics) else { return }
-        try complete(second: record, monotonicUs: monotonicUs)
+        try complete(second: record)
     }
 
-    private func complete(second record: SecondRecord, monotonicUs: Int64) throws {
+    private func complete(second record: SecondRecord) throws {
+        // 区切りは、溜まっている先頭からの経過で決める。書いたあとの時刻を基準にすると、
+        // 最初のひと塊だけ1件多くなる。件数が揃わないと、溜まる量の見積もりが立たない。
+        let flushIntervalUs = Int64(configuration.flushIntervalSeconds) * 1_000_000
+        if let start = pendingSeconds.first?.monotonicUs,
+           record.monotonicUs - start >= flushIntervalUs {
+            try flush()
+        }
         pendingSeconds.append(record)
 
         liveState.update(
@@ -104,12 +110,6 @@ public final class RecordingPipeline {
             noiseFloorDbfs: detector.noiseFloorDbfs,
             anomalies: []
         )
-
-        let flushIntervalUs = Int64(configuration.flushIntervalSeconds) * 1_000_000
-        if monotonicUs - lastFlushUs >= flushIntervalUs {
-            try flush()
-            lastFlushUs = monotonicUs
-        }
     }
 
     /// 溜まっている常時層を書き出す。セッション終了時にも呼ぶ。

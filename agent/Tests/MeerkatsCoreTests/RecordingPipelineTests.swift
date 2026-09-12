@@ -5,12 +5,12 @@ import XCTest
 private final class CollectingSink: RecordingPipeline.Sink {
     var seconds: [SecondRecord] = []
     var anchors: [ClockAnchor] = []
-    /// write(seconds:) が呼ばれた回数。まとめ書きが効いているかの確認に使う。
-    var secondWriteCount = 0
+    /// 1回の write(seconds:) で渡された件数。まとめ書きの区切りを確かめるのに使う。
+    var batchSizes: [Int] = []
 
     func write(seconds records: [SecondRecord]) throws {
         seconds.append(contentsOf: records)
-        secondWriteCount += 1
+        batchSizes.append(records.count)
     }
 
     func write(anchor: ClockAnchor) throws { anchors.append(anchor) }
@@ -74,15 +74,21 @@ final class RecordingPipelineTests: XCTestCase {
     }
 
     /// まとめ書きが効いていること。1秒ごとに書くと毎時3600回のコミットになる。
+    /// 件数まで見るのは、区切りの基準を間違えるとひと塊だけ件数がずれるため。
     func testSecondsAreWrittenInBatches() throws {
         let (pipeline, sink, _) = makePipeline { $0.flushIntervalSeconds = 10 }
         try pipeline.ingest(samples(seconds: 25, amplitude: 0.1), wallUs: 0)
 
-        XCTAssertEqual(sink.secondWriteCount, 2, "10秒ごとに2回")
+        XCTAssertEqual(sink.batchSizes, [10, 10], "10秒ぶんずつ、同じ件数で書かれる")
         XCTAssertEqual(sink.seconds.count, 20)
 
         try pipeline.finish()
-        XCTAssertEqual(sink.seconds.count, 25, "締めで残りも書かれる")
+        XCTAssertEqual(sink.batchSizes, [10, 10, 5], "締めで残りも書かれる")
+        XCTAssertEqual(sink.seconds.count, 25)
+        XCTAssertEqual(
+            sink.seconds.map(\.monotonicUs).first, 0, "先頭から欠けずに書かれている"
+        )
+        XCTAssertEqual(sink.seconds.map(\.monotonicUs).last, 24_000_000)
     }
 
     func testAnchorIsWrittenAtStartAndInterval() throws {
