@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="Meerkats"
-EXECUTABLE="MeerkatsAgent"
+EXECUTABLE="MeerkatsSentry"
 BUNDLE_ID="dev.meerkats.agent"
 APP_DIR="build/${APP_NAME}.app"
 ENTITLEMENTS="build/${APP_NAME}.entitlements"
