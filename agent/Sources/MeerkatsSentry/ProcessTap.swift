@@ -22,10 +22,12 @@ public final class ProcessTap {
         /// 判断に要った値をすべて持って返す。
         case unsupportedFormat(
             formatId: AudioFormatID, flags: AudioFormatFlags,
-            channels: UInt32, bitsPerChannel: UInt32
+            channels: UInt32, bitsPerChannel: UInt32, sampleRate: Double
         )
         /// 記録の経路が、渡した率で組まれていなかった。
         case pipelineRateMismatch(tap: Double, pipeline: Double)
+        /// 率がフレームの刻みで割り切れず、1フレームごとに端数が出る。
+        case rateNotDivisibleIntoFrames(sampleRate: Double, frameMs: Int)
         case ioProcFailed(OSStatus)
     }
 
@@ -113,6 +115,17 @@ public final class ProcessTap {
         guard pipeline.configuration.sampleRate == format.mSampleRate else {
             throw TapError.pipelineRateMismatch(
                 tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate
+            )
+        }
+
+        // **刻みで割り切れることも確かめる。** 1フレームのサンプル数は切り捨てで整数になるので、
+        // 割り切れない率だと1フレームごとに端数を捨てる。捨てた量は溜まり、恒常的なずれになる。
+        // 率が合っていることだけ確かめて満足すると、同じ「静かにずれる」を別の入口から通す。
+        let exactFrameLength =
+            format.mSampleRate * Double(pipeline.configuration.frameMs) / 1000.0
+        guard Double(pipeline.configuration.frameLength) == exactFrameLength else {
+            throw TapError.rateNotDivisibleIntoFrames(
+                sampleRate: format.mSampleRate, frameMs: pipeline.configuration.frameMs
             )
         }
         self.pipeline = pipeline
@@ -258,19 +271,22 @@ public final class ProcessTap {
     /// **読み方を決め打ちしている以上、その前提を確かめる。**
     /// どれが違っても音は出るので、値を見るまで気づかない。
     ///
-    /// サンプル率は見ない。率はタップが決め、記録の経路をその率で組むからである。
+    /// **率は「いくつか」ではなく「扱える範囲か」だけを見る。** いくつになるかはタップが決め、
+    /// 記録の経路をその率で組む。ここで見るのは、その率で組めない値を先に弾くことだけになる。
     private func verify(_ format: AudioStreamBasicDescription) throws {
         guard format.mFormatID == kAudioFormatLinearPCM,
               format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               format.mBitsPerChannel == 32,
               format.mChannelsPerFrame == 1,
-              // 実在する最低の音声の率。0より大きいだけだと、1フレームのサンプル数が
-              // 0に落ちて Framer の前提を割る。
-              format.mSampleRate >= 8000
+              // 実在する音声の率の範囲。下を切らないと1フレームのサンプル数が0に落ちて
+              // Framer の前提を割る。上を切らないと無限大がここを通り、
+              // 整数に直すところで落ちる。
+              format.mSampleRate >= 8000, format.mSampleRate <= 768_000
         else {
             throw TapError.unsupportedFormat(
                 formatId: format.mFormatID, flags: format.mFormatFlags,
-                channels: format.mChannelsPerFrame, bitsPerChannel: format.mBitsPerChannel
+                channels: format.mChannelsPerFrame, bitsPerChannel: format.mBitsPerChannel,
+                sampleRate: format.mSampleRate
             )
         }
     }

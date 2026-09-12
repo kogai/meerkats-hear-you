@@ -32,7 +32,9 @@ public final class RecordingPipeline {
             self.anchorIntervalSeconds = anchorIntervalSeconds
         }
 
-        var frameLength: Int { Int(sampleRate * Double(frameMs) / 1000.0) }
+        /// 1フレームのサンプル数。**切り捨てで整数にする。** 率が刻みで割り切れない場合、
+        /// 捨てた端数は溜まって恒常的なずれになる。割り切れるかどうかは、率を決める側が見る。
+        public var frameLength: Int { Int(sampleRate * Double(frameMs) / 1000.0) }
         public var frameDurationUs: Int64 { Int64(frameMs) * 1000 }
         var framesPerDetailWindow: Int { detailWindowSeconds * (1000 / frameMs) }
     }
