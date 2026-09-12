@@ -52,3 +52,16 @@ public struct SecondRecord: Equatable {
     }
 }
 
+
+/// 詳細層として書き出す区間。frames は時刻順。
+public struct DetailWindow: Equatable {
+    public let startUs: Int64
+    public let trigger: String
+    public let frames: [FrameMetrics]
+
+    public init(startUs: Int64, trigger: String, frames: [FrameMetrics]) {
+        self.startUs = startUs
+        self.trigger = trigger
+        self.frames = frames
+    }
+}
