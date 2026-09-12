@@ -163,4 +163,4 @@ jobs:
           fi
           gh release create "$GITHUB_REF_NAME" "${{ steps.meta.outputs.asset }}" \
             --title "$GITHUB_REF_NAME" \
-            --notes "$(printf '%s\n\n初回起動時にマイクの許可を求められます。許可すると、メニューバーに現在のレベルが出ます。\n\nApple Silicon と Intel の両方で動きます。macOS 13 以降が必要です。' "$OPEN_NOTE")"
+            --notes "$(printf '%s\n\n初回起動時にマイクの許可を求められます。許可すると、メニューバーに現在のレベルが出ます。\n\nApple Silicon と Intel の両方で動きます。macOS 14.4 以降が必要です。' "$OPEN_NOTE")"

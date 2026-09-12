@@ -60,7 +60,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 	<key>CFBundleVersion</key>
 	<string>${BUILD}</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>13.0</string>
+	<string>14.4</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
