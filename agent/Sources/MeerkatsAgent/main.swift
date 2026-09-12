@@ -9,12 +9,20 @@ import MeerkatsCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: RecordingStore?
     private var capture: AudioCapture?
+    private var menuBar: MenuBarController?
     private let liveState = LiveState()
 
     private var sessionId: Int64 = 0
     private var streamId: Int64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 記録より先に出す。許可が下りずに記録が始まらなくても、
+        // 「動いてはいるが測れていない」ことが表示から分かるようにするため。
+        let menuBar = MenuBarController(liveState: liveState)
+        menuBar.onQuit = { NSApp.terminate(nil) }
+        menuBar.start()
+        self.menuBar = menuBar
+
         Task { await startRecording() }
     }
 
@@ -25,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? store?.endSession(id: sessionId, wallUs: Self.nowWallUs())
         }
         store?.close()
+        menuBar?.stop()
     }
 
     private func startRecording() async {
