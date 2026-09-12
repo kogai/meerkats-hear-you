@@ -18,3 +18,4 @@
 | [0004](0004-sqlite-storage.md) | 記録の保存先にSQLiteを使う | Accepted |
 | [0005](0005-single-app-bundle.md) | エージェントとUIを単一の .app バンドルにまとめ、メニューバーに常駐させる | Accepted |
 | [0006](0006-file-exchange-before-p2p.md) | 突合は初期版ではファイル交換で行い、P2Pは後回しにする | Accepted |
+| [0007](0007-signed-release-from-ci.md) | 配布用バイナリはCIで署名済みとして作り、タグで公開する | Accepted |
