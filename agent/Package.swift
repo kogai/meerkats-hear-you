@@ -8,7 +8,10 @@ import PackageDescription
 // 判断は持たない。CIでビルドと署名までは確かめられるが、マイクを伴う動作は実機でしか確認できない。
 let package = Package(
     name: "Meerkats",
-    platforms: [.macOS(.v13)],
+    // 14.4 は Core Audio のプロセスタップが入った版(ADR-0008)。受信音声の取得に要る。
+    // 13.0 だった下限は ScreenCaptureKit が音声に対応した版に合わせたもので、
+    // その手段を採らないと決めた時点で維持する理由が無くなっている。
+    platforms: [.macOS("14.4")],
     targets: [
         .target(name: "MeerkatsCore"),
         .executableTarget(name: "MeerkatsSentry", dependencies: ["MeerkatsCore"]),
