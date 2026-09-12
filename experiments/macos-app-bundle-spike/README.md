@@ -83,23 +83,38 @@ mise run spike
 
 ## 権限が維持されるかの確認手順
 
-**2回実行して、2回目の `authorization_status_before` を見る。**
+**3回実行する。** 「再ビルド」と「コード変更」は別物なので、2回では足りない。ソースが変わらなければ
+`swift build` は何もせずバイナリも同一になるため、2回目だけでは変更時の挙動を確かめられない。
 
 ```bash
 mise run spike   # 1回目: notDetermined → ダイアログが出る
-mise run spike   # 2回目: リビルドされた状態で再実行
+mise run spike   # 2回目: 変更なしで再ビルド
+sed -i '' 's/let captureSeconds = 3.0/let captureSeconds = 3.5/' Sources/LevelSpike/main.swift
+mise run spike   # 3回目: コードを変えて再ビルド
 ```
 
-- 2回目が `authorized` で `prompted` が `false` → **リビルドをまたいで権限が維持された。**
-  ad-hoc署名のままで開発できる。
-- 2回目が `notDetermined` で再びダイアログが出た → 権限が失われている。安定した署名の同一性が必要。
-  `SPIKE_SIGN_IDENTITY` に自己署名証明書を指定して再検証する。
+各回の `authorization_status_before` と `prompted` を見る。`build.sh` が毎回 `CDHash` を表示するので、
+同一性の変化と対応づけられる。
+
+### 実測済みの結果(ad-hoc署名、2026-09-11)
+
+| 実行 | `authorization_status_before` | `prompted` | CDHash |
+|---|---|---|---|
+| 1回目 | `notDetermined` | `true` | A |
+| 2回目(変更なし) | `authorized` | `false` | A(同じ) |
+| 3回目(変更あり) | `notDetermined` | `true` | B(異なる) |
+
+**コードを変えると許可が失われる。** 3回目が `denied` ではなく `notDetermined` に戻るのは、TCCが
+変更後のバイナリをまったく別の未知のアプリとして扱っているため。詳細は
+[検証レポート](../../docs/experiments/macos-app-bundle-spike-result.md)。
+
+したがって**開発中は安定した署名の同一性が必要**になる。自己署名証明書を用意して指定する。
 
 ```bash
 SPIKE_SIGN_IDENTITY="My Self-Signed Cert" mise run spike
 ```
 
-`build.sh` が毎回 `CDHash` を表示するので、リビルド前後で値が変わっているかもあわせて確認できる。
+なおこの構成で許可が実際に維持されるかは未検証。
 
 ## うまくいかないとき
 
