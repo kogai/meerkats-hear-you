@@ -22,9 +22,14 @@ public enum AudioProcessList {
 
         /// 値を読めずに捨てたプロセスの数。
         ///
-        /// **捨てた事実を落とさない。** 落とすと「1つも読めなかった」と「会議アプリが
-        /// 鳴っていない」が同じ空の一覧になる。ADR-0008 がいちばん避けたい混同を、
-        /// この層が作ることになる。判断は上でするので、ここでは数だけ持って返す。
+        /// **捨てた事実を落とさない。** 落とすと「読めなかった」と「会議アプリが鳴っていない」
+        /// が同じ空の一覧になる。ADR-0008 がいちばん避けたい混同である。
+        ///
+        /// **ただし、これだけでは足りない。** Core Audio が一覧そのものを空で返した場合は
+        /// この数も 0 になり、「鳴っていない」と区別がつかない。許可が下りていないときに
+        /// 何が返るかは実機で確かめていないので、そこは埋まっていない。
+        ///
+        /// プロセスの終了は常に混ざる。数が 0 でないこと自体を異常として扱わないこと。
         public var unreadable: Int
     }
 
@@ -51,7 +56,8 @@ public enum AudioProcessList {
     ///
     /// 大きさを問い合わせてから確保するが、**2回の呼び出しの間に増えたぶんは取りこぼす。**
     /// `ioDataSize` は入口では確保した長さの上限として効くので、古い値を渡した2回目は
-    /// そこで頭打ちになる。取りこぼしたぶんは次の呼び出しで拾う。
+    /// そこで頭打ちになる。取りこぼしたぶんは、次の呼び出しが成功すれば拾える。
+    /// 大きさが足りないことを Core Audio が誤りとして返すなら、そこで投げる。
     ///
     /// 減った場合は、返ってきた大きさまで詰め直す。詰めないと末尾に
     /// `kAudioObjectUnknown` が残り、存在しないプロセスを読みにいくことになる。
@@ -82,19 +88,27 @@ public enum AudioProcessList {
 
     /// 1プロセスぶんの値を読む。
     ///
-    /// **読めなかったプロセスは捨てる。** 一覧には自分自身や、音声を扱わない常駐プロセスも
-    /// 並ぶ。そこで失敗するたびに全体を投げ返すと、会議アプリが1つも取れなくなる。
+    /// **pid か出力状態を読めなかったプロセスは捨てる。** 一覧には自分自身や、音声を扱わない
+    /// 常駐プロセスも並ぶ。そこで失敗するたびに全体を投げ返すと、会議アプリが1つも取れなくなる。
+    /// 捨てた数は `Snapshot.unreadable` が持って返る。
+    ///
+    /// **読めなかった値を既定値で埋めない。** 埋めると、読めなかった事実がその場で消える。
+    /// 出力状態を false で埋めれば「鳴っていない」と見分けがつかなくなり、捨てた数にも
+    /// 出てこない。**この層は値を作らない。**
+    ///
+    /// バンドルIDだけは別で、無いことが正常である。会議アプリでないプロセスの多くは持たない。
     private static func describe(_ object: AudioObjectID) -> AudioProcess? {
-        guard let pid = integer(of: object, kAudioProcessPropertyPID, as: pid_t.self) else {
+        guard
+            let pid = integer(of: object, kAudioProcessPropertyPID, as: pid_t.self),
+            let isRunningOutput =
+                integer(of: object, kAudioProcessPropertyIsRunningOutput, as: UInt32.self)
+        else {
             return nil
         }
         // 空文字は「取れなかった」と同じに倒す。倒さないと name のフォールバックで
         // 「値がある」扱いになり、名前が空のまま記録に残る。
         let rawBundleId = string(of: object, kAudioProcessPropertyBundleID)
         let bundleId: String? = (rawBundleId?.isEmpty ?? true) ? nil : rawBundleId
-        // 読めなければ false に倒す。鳴っているか分からないものを録るより、録らないほうが安い。
-        let isRunningOutput =
-            integer(of: object, kAudioProcessPropertyIsRunningOutput, as: UInt32.self) ?? 0
 
         return AudioProcess(
             pid: pid,
