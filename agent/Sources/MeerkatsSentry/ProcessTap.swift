@@ -12,25 +12,40 @@ import MeerkatsCore
 /// 変わったときに作り直すことになるので、単位を小さく取ってある。
 public final class ProcessTap {
     public enum TapError: Error {
+        case alreadyRunning
         case processNotFound(pid: pid_t)
         case tapCreationFailed(OSStatus)
+        case tapUIDUnavailable(OSStatus)
         case aggregateDeviceCreationFailed(OSStatus)
         case tapFormatUnavailable(OSStatus)
-        /// タップの形式がパイプラインの前提と違う。実機で初めて分かる種類の失敗なので、
-        /// 値を持って返す。
-        case unsupportedFormat(channels: UInt32, sampleRate: Double)
+        /// タップの形式が扱えない並びだった。実機で初めて分かる種類の失敗なので、
+        /// 判断に要った値をすべて持って返す。
+        case unsupportedFormat(
+            formatId: AudioFormatID, flags: AudioFormatFlags,
+            channels: UInt32, bitsPerChannel: UInt32
+        )
         case ioProcFailed(OSStatus)
     }
 
-    private let pipeline: RecordingPipeline
+    /// タップの実際のサンプル率を受け取って記録の経路を作る。
+    ///
+    /// **率を渡してから作らせるのが要点。** タップの率は出力デバイスの既定に従うので、
+    /// こちらから決められない。48kHz 前提で組んだ経路を後から当てると、44.1kHz の機械では
+    /// 毎回弾かれるか、弾かなければ約9%ずれた時系列が黙って記録される。
+    public typealias PipelineFactory = (_ sampleRate: Double) -> RecordingPipeline
+
+    private let makePipeline: PipelineFactory
     private let onError: (Error) -> Void
 
+    private var pipeline: RecordingPipeline?
     private var tapId = AudioObjectID(kAudioObjectUnknown)
     private var aggregateId = AudioObjectID(kAudioObjectUnknown)
     private var ioProcId: AudioDeviceIOProcID?
 
-    public init(pipeline: RecordingPipeline, onError: @escaping (Error) -> Void) {
-        self.pipeline = pipeline
+    public init(
+        makePipeline: @escaping PipelineFactory, onError: @escaping (Error) -> Void
+    ) {
+        self.makePipeline = makePipeline
         self.onError = onError
     }
 
@@ -39,6 +54,16 @@ public final class ProcessTap {
     /// 手順は3段。**タップを作り、それだけを載せた集約デバイスを作り、IOを回す。**
     /// タップ単体では音を取り出せず、デバイスに載せて初めて読める。
     public func start(pid: pid_t) throws {
+        // **2回目を黙って受け付けない。** 受け付けると、失敗したときの後始末が
+        // 1回目の資源を壊し、成功したときは1回目が漏れたまま2本のIOが同じ経路を叩く。
+        // 音が混ざるので、ADR-0008 が禁じたものがここから出てくる。
+        guard tapId == AudioObjectID(kAudioObjectUnknown),
+              aggregateId == AudioObjectID(kAudioObjectUnknown),
+              ioProcId == nil
+        else {
+            throw TapError.alreadyRunning
+        }
+
         do {
             try beginTapping(pid: pid)
         } catch {
@@ -66,27 +91,26 @@ public final class ProcessTap {
         var status = AudioHardwareCreateProcessTap(description, &tapId)
         guard status == noErr else { throw TapError.tapCreationFailed(status) }
 
-        aggregateId = try createAggregateDevice(tapUID: description.uuid.uuidString)
+        // **作った実物からUIDを読む。** 渡した記述の値をそのまま使うと、Core Audio が
+        // 別のUIDを振っていた場合に、集約デバイスが存在しないタップを指す。
+        // そのときも作成自体は成功し、無音がゼロ埋めで返り続ける。
+        let uid = try tapUID()
+        aggregateId = try createAggregateDevice(tapUID: uid)
+
         let format = try tapFormat()
+        try verify(format)
 
-        // **パイプラインが前提にしている値と突き合わせる。** サンプル率が違えば、
-        // 1秒ぶんとして切り出す長さがずれる。ずれても記録は残るので、値を見るまで気づかない。
-        // チャンネル数が1でなければ、インターリーブを1本の列として読むことになる。
-        // Float32 でなければ、別の並びのビットを Float として読むことになる。
-        guard
-            format.mChannelsPerFrame == 1,
-            format.mSampleRate == pipeline.configuration.sampleRate,
-            format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
-            format.mBitsPerChannel == 32
-        else {
-            throw TapError.unsupportedFormat(
-                channels: format.mChannelsPerFrame, sampleRate: format.mSampleRate
-            )
-        }
+        // 率はタップが決める。こちらの前提を押し付けない。
+        let pipeline = makePipeline(format.mSampleRate)
+        self.pipeline = pipeline
 
+        // **IOの閉包に self を入れない。** 入れると、最後の強参照がIOスレッドの中で
+        // 落ちうる。そこで deinit が走ると、IOスレッドから AudioDeviceStop を呼んで
+        // 自分を待つことになる。要るのは経路と誤りの行き先だけなので、それだけ持たせる。
+        let onError = self.onError
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcId, aggregateId, nil) {
-            [weak self] _, inputData, _, _, _ in
-            self?.handle(inputData)
+            _, inputData, _, _, _ in
+            Self.handle(inputData, pipeline: pipeline, onError: onError)
         }
         guard status == noErr, let ioProcId else { throw TapError.ioProcFailed(status) }
 
@@ -97,8 +121,11 @@ public final class ProcessTap {
     /// 記録を締めて、タップを畳む。
     public func stop() {
         teardown()
+        // 先に手放す。締めに失敗したときに、もう一度締めにいかないため。
+        let pipeline = self.pipeline
+        self.pipeline = nil
         do {
-            try pipeline.finish()
+            try pipeline?.finish()
         } catch {
             onError(error)
         }
@@ -107,7 +134,7 @@ public final class ProcessTap {
     /// Core Audio の資源だけを戻す。**記録は締めない。**
     ///
     /// `stop()` と分けてあるのは、`start` が途中で失敗したときにも呼ぶためである。
-    /// そこで `pipeline.finish()` まで走ると、1本も読んでいない記録を締めることになる。
+    /// そこで `finish()` まで走ると、1本も読んでいない記録を締めることになる。
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
         if let ioProcId {
@@ -128,7 +155,9 @@ public final class ProcessTap {
     }
 
     /// 呼び出し側が stop を呼び忘れても、タップだけは戻す。
-    /// **Core Audio の資源はプロセスの生存期間より長く残りうる。**
+    ///
+    /// **記録は締まらない。** 溜まっている最大10秒ぶんが消える。締めたいなら stop を呼ぶこと。
+    /// ここで締めないのは、deinit の中で失敗を報告する先が無いからである。
     deinit {
         teardown()
     }
@@ -157,6 +186,22 @@ public final class ProcessTap {
             throw TapError.processNotFound(pid: pid)
         }
         return object
+    }
+
+    private func tapUID() throws -> String {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize = UInt32(MemoryLayout<CFString?>.size)
+        var value: CFString?
+
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(tapId, &address, 0, nil, &dataSize, $0)
+        }
+        guard status == noErr, let value else { throw TapError.tapUIDUnavailable(status) }
+        return value as String
     }
 
     /// タップだけを載せた私的な集約デバイス。
@@ -197,6 +242,24 @@ public final class ProcessTap {
         return format
     }
 
+    /// **読み方を決め打ちしている以上、その前提を確かめる。**
+    /// どれが違っても音は出るので、値を見るまで気づかない。
+    ///
+    /// サンプル率は見ない。率はタップが決め、記録の経路をその率で組むからである。
+    private func verify(_ format: AudioStreamBasicDescription) throws {
+        guard format.mFormatID == kAudioFormatLinearPCM,
+              format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              format.mBitsPerChannel == 32,
+              format.mChannelsPerFrame == 1,
+              format.mSampleRate > 0
+        else {
+            throw TapError.unsupportedFormat(
+                formatId: format.mFormatID, flags: format.mFormatFlags,
+                channels: format.mChannelsPerFrame, bitsPerChannel: format.mBitsPerChannel
+            )
+        }
+    }
+
     // MARK: - 読み取り
 
     /// IOスレッドから**直に**呼ばれる。**ここで時間を使わない。** 遅れると音が途切れ、
@@ -207,7 +270,13 @@ public final class ProcessTap {
     /// マイク側(`AudioCapture`)も同じ形なので、直すなら両方まとめて、
     /// 確保済みのリングに写して別のスレッドで捌く形になる。**片方だけ直すと、
     /// 2つの経路で理由の違う実装が並ぶ。**
-    private func handle(_ bufferList: UnsafePointer<AudioBufferList>) {
+    ///
+    /// 型メソッドにしてあるのは、IOの閉包に `self` を入れないためである。
+    private static func handle(
+        _ bufferList: UnsafePointer<AudioBufferList>,
+        pipeline: RecordingPipeline,
+        onError: (Error) -> Void
+    ) {
         let buffers = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: bufferList)
         )

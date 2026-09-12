@@ -52,5 +52,10 @@ jobs:
       - name: マイクの用途説明があるか
         run: plutil -extract NSMicrophoneUsageDescription raw build/Meerkats.app/Contents/Info.plist
 
+      # 受信音声のタップ(ADR-0008)にはマイクとは別の鍵が要る。無いとタップが張れない。
+      # 同じ理由がより強く当てはまるのに、こちらだけ確かめていなかった。
+      - name: 音声取り込みの用途説明があるか
+        run: plutil -extract NSAudioCaptureUsageDescription raw build/Meerkats.app/Contents/Info.plist
+
       - name: 署名の検証
         run: codesign --verify --strict --verbose=2 build/Meerkats.app
