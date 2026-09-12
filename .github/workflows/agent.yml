@@ -37,3 +37,20 @@ jobs:
 
       - name: テスト
         run: swift test
+
+      - name: バンドルの組み立てと署名
+        run: ./build.sh
+
+      - name: Info.plist が妥当か
+        run: plutil -lint build/Meerkats.app/Contents/Info.plist
+
+      - name: 常駐として起動する設定になっているか
+        run: plutil -extract LSUIElement raw build/Meerkats.app/Contents/Info.plist
+
+      # これが無いとマイクを要求した時点でプロセスが落ちる。実機でしか気づけない類の失敗なので、
+      # 存在だけはここで確かめておく。
+      - name: マイクの用途説明があるか
+        run: plutil -extract NSMicrophoneUsageDescription raw build/Meerkats.app/Contents/Info.plist
+
+      - name: 署名の検証
+        run: codesign --verify --strict --verbose=2 build/Meerkats.app
