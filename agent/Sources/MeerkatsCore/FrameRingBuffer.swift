@@ -8,41 +8,37 @@ import Foundation
 /// 保持するのはフレームから算出した値だけで、PCMは持たない。
 public struct FrameRingBuffer {
     public let capacity: Int
-    private var storage: [FrameMetrics?]
+    private var storage: [FrameMetrics] = []
+    /// 一周したあとに次へ書き込む位置。これは同時に「最も古い要素の位置」でもある。
     private var writeIndex = 0
-    private var filled = 0
 
     public init(capacity: Int) {
         precondition(capacity > 0, "capacity は正の値である必要がある")
         self.capacity = capacity
-        storage = Array(repeating: nil, count: capacity)
+        storage.reserveCapacity(capacity)
     }
 
-    public var count: Int { filled }
+    public var count: Int { storage.count }
 
     public mutating func append(_ metrics: FrameMetrics) {
-        storage[writeIndex] = metrics
-        writeIndex = (writeIndex + 1) % capacity
-        if filled < capacity { filled += 1 }
+        if storage.count < capacity {
+            storage.append(metrics)
+            writeIndex = storage.count % capacity
+        } else {
+            storage[writeIndex] = metrics
+            writeIndex = (writeIndex + 1) % capacity
+        }
     }
 
     /// 保持しているフレームを古い順に返す。
     public func snapshot() -> [FrameMetrics] {
-        guard filled > 0 else { return [] }
-        var out: [FrameMetrics] = []
-        out.reserveCapacity(filled)
-        let start = (writeIndex - filled + capacity) % capacity
-        for offset in 0 ..< filled {
-            if let metrics = storage[(start + offset) % capacity] {
-                out.append(metrics)
-            }
-        }
-        return out
+        // まだ一周していなければ、追加順がそのまま時刻順。
+        guard storage.count == capacity else { return storage }
+        return Array(storage[writeIndex...]) + Array(storage[..<writeIndex])
     }
 
     public mutating func removeAll() {
-        for index in storage.indices { storage[index] = nil }
+        storage.removeAll(keepingCapacity: true)
         writeIndex = 0
-        filled = 0
     }
 }

@@ -74,6 +74,27 @@ final class AggregatorTests: XCTestCase {
         XCTAssertNil(aggregator.flush(), "flush後は空になる")
     }
 
+    /// 部分レコードと満了レコードを区別できること。
+    ///
+    /// 比率は件数で正規化されるため、フレーム数が無いと1フレームだけのレコードと
+    /// 1秒ぶんのレコードが同じ形になり、分析時に同じ重みで扱ってしまう。
+    func testFrameCountDistinguishesPartialFromFull() {
+        var aggregator = Aggregator(frameMs: 20)
+
+        var full: SecondRecord?
+        for index in 0 ..< 50 {
+            full = aggregator.push(metrics(us: Int64(index) * 20_000, dbfs: -30, speech: true))
+        }
+        XCTAssertEqual(full?.frameCount, 50)
+
+        _ = aggregator.push(metrics(us: 1_000_000, dbfs: -30, speech: true))
+        let partial = aggregator.flush()
+
+        XCTAssertEqual(partial?.frameCount, 1)
+        // 比率だけを見ると満了レコードと区別がつかない。
+        XCTAssertEqual(partial?.speechRatio, full?.speechRatio)
+    }
+
     func testFlushOnEmptyReturnsNil() {
         var aggregator = Aggregator(frameMs: 20)
         XCTAssertNil(aggregator.flush())

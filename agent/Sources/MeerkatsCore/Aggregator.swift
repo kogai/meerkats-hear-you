@@ -39,7 +39,8 @@ public struct Aggregator {
             minDbfs: levels.min() ?? Levels.floorDbfs,
             maxDbfs: levels.max() ?? Levels.floorDbfs,
             speechRatio: Double(speechCount) / Double(frames.count),
-            clipRatio: clipSum / Double(frames.count)
+            clipRatio: clipSum / Double(frames.count),
+            frameCount: frames.count
         )
     }
 }

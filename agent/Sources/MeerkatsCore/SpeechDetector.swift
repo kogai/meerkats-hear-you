@@ -26,8 +26,9 @@ public struct SpeechDetector {
     ///     会話中は発話が6〜8割を占めるため、窓が短いと低パーセンタイルまで発話レベルに
     ///     押し上げられ、発話を拾えなくなる。
     ///   - recomputeInterval: フロアを再計算する間隔(フレーム数)。既定は1秒ごと。
-    ///     フロアはゆっくりしか動かないため毎フレーム計算する必要がなく、
-    ///     常時稼働での消費を抑える意味もある(ADR-0004)。
+    ///     フロアはゆっくりしか動かないため毎フレーム計算する必要がない。
+    ///     終日動き続ける常駐プロセスなので、不要な計算は避ける。
+    ///     ただし窓が育つまでは毎フレーム計算する(下記 `push` を参照)。
     public init(
         windowFrames: Int = 1500,
         marginDb: Double = 12.0,
@@ -57,7 +58,11 @@ public struct SpeechDetector {
         if filled < window.count { filled += 1 }
 
         framesSinceRecompute += 1
-        if framesSinceRecompute >= recomputeInterval {
+        // 窓が育つまでは毎フレーム計算する。ごく少数のサンプルから決めたフロアが
+        // 次の再計算まで固定されると、発話の途中で始まったセッションでは
+        // フロアが発話レベルに張り付き、冒頭の発話をまるごと取りこぼす。
+        // 対象が少ないうちの再計算は安いので、ここは頻度より正しさを取る。
+        if filled < recomputeInterval || framesSinceRecompute >= recomputeInterval {
             cachedFloor = estimateFloor()
             framesSinceRecompute = 0
         }

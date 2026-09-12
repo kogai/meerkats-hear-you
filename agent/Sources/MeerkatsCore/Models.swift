@@ -26,6 +26,12 @@ public struct SecondRecord: Equatable {
     public let maxDbfs: Double
     public let speechRatio: Double
     public let clipRatio: Double
+    /// このレコードの元になったフレーム数。
+    ///
+    /// セッション終了時の端数や、キャプチャが途切れた区間では1秒に満たないレコードが生じる。
+    /// 比率は件数で正規化されるため、これが無いと1フレームだけのレコードと満了レコードを
+    /// 区別できず、分析時に同じ重みで扱ってしまう。
+    public let frameCount: Int
 
     public init(
         monotonicUs: Int64,
@@ -33,7 +39,8 @@ public struct SecondRecord: Equatable {
         minDbfs: Double,
         maxDbfs: Double,
         speechRatio: Double,
-        clipRatio: Double
+        clipRatio: Double,
+        frameCount: Int
     ) {
         self.monotonicUs = monotonicUs
         self.meanDbfs = meanDbfs
@@ -41,6 +48,7 @@ public struct SecondRecord: Equatable {
         self.maxDbfs = maxDbfs
         self.speechRatio = speechRatio
         self.clipRatio = clipRatio
+        self.frameCount = frameCount
     }
 }
 
