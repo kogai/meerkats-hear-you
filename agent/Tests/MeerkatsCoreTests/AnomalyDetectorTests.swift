@@ -128,10 +128,31 @@ final class AnomalyDetectorTests: XCTestCase {
 
     /// 閾値をストリーム種別ごとに引けること。いまは同じ値だが、呼び出し側を書き換えずに
     /// 分岐できる形になっていることを固定する(ADR-0008)。
-    func testThresholdsAreAddressableByStream() {
-        XCTAssertEqual(AnomalyDetector.Thresholds.mic.lowLevelDbfs,
-                       AnomalyDetector.Thresholds.output.lowLevelDbfs,
-                       "いまは同じ値でよい。違えるのは実機で測ってから")
-        XCTAssertEqual(AnomalyDetector.Thresholds.mic.sustainedSeconds, 3)
+    /// ストリーム種別から正しいほうを引けること。
+    /// **値が等しいことは確認しない。** いまは偶然等しいだけで、実機で測ったら分かれる
+    /// (ADR-0008)。等しさを固定すると、その正しい変更でこのテストが落ちる。
+    func testThresholdsAreLookedUpByStream() {
+        XCTAssertEqual(AnomalyDetector.Thresholds.for(.mic), AnomalyDetector.Thresholds.mic)
+        XCTAssertEqual(AnomalyDetector.Thresholds.for(.output), AnomalyDetector.Thresholds.output)
+    }
+
+    /// どちらのストリームの閾値も、検知器に渡して意味のある値であること。
+    /// こちらは値を分けた後も成り立つ性質だけを見る。
+    func testThresholdsAreUsableForEitherStream() {
+        for stream in [StreamKind.mic, .output] {
+            let thresholds = AnomalyDetector.Thresholds.for(stream)
+            XCTAssertGreaterThan(
+                thresholds.lowLevelDbfs, Levels.floorDbfs,
+                "\(stream) の低レベル閾値が下限に張り付いていて、発火しようがない")
+            XCTAssertTrue(
+                (0...1).contains(thresholds.clipRatio),
+                "\(stream) のクリップ比率が比率になっていない")
+            XCTAssertTrue(
+                (0...1).contains(thresholds.minSpeechRatio),
+                "\(stream) の発話比率が比率になっていない")
+            XCTAssertGreaterThan(
+                thresholds.sustainedSeconds, 0,
+                "\(stream) の継続秒数が0以下だと、瞬間的な変動で鳴る")
+        }
     }
 }

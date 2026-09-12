@@ -50,14 +50,14 @@ final class StatusTextTests: XCTestCase {
 
     func testDetailWithoutInput() {
         let lines = StatusText.detail(
-            snapshot(mean: Levels.floorDbfs, speaking: false)
+            snapshot(mean: Levels.floorDbfs, speaking: false), in: .mic
         )
         XCTAssertEqual(lines.first, "入力なし")
         XCTAssertFalse(lines.contains { $0.contains("dBFS") })
     }
 
     func testDetailListsLevelAndFloor() {
-        let lines = StatusText.detail(snapshot(mean: -25, floor: -61.5))
+        let lines = StatusText.detail(snapshot(mean: -25, floor: -61.5), in: .mic)
         XCTAssertTrue(lines.contains("レベル -25.0 dBFS"))
         XCTAssertTrue(lines.contains("ノイズフロア -61.5 dBFS"))
         XCTAssertTrue(lines.contains("発話中"))
@@ -66,7 +66,7 @@ final class StatusTextTests: XCTestCase {
 
     /// 詳細では異常をすべて出す。こちらは幅に余裕がある。
     func testDetailListsAllAnomaliesInPriorityOrder() {
-        let lines = StatusText.detail(snapshot(anomalies: [.lowLevel, .clipping]))
+        let lines = StatusText.detail(snapshot(anomalies: [.lowLevel, .clipping]), in: .mic)
 
         let clippingIndex = lines.firstIndex(of: StatusText.description(of: .clipping, in: .mic))
         let lowLevelIndex = lines.firstIndex(of: StatusText.description(of: .lowLevel, in: .mic))
@@ -87,6 +87,17 @@ final class StatusTextTests: XCTestCase {
                 )
             }
         }
+    }
+
+    /// 受信側の詳細は、異常の行だけでなく発話の行も相手の話になっていること。
+    /// ここが「発話中」のままだと、こちらが話しているように読める。
+    func testDetailForOutputStreamIsAboutTheOtherParty() {
+        let lines = StatusText.detail(snapshot(mean: -25, speaking: true), in: .output)
+        XCTAssertTrue(lines.contains("相手が発話中"))
+        XCTAssertFalse(lines.contains("発話中"), "マイク側の言い回しが残っている")
+
+        let silent = StatusText.detail(snapshot(mean: -25, speaking: false), in: .output)
+        XCTAssertTrue(silent.contains("相手は無音"))
     }
 
     /// マイク側と受信側で文言が違うこと。同じ異常でも利用者にとっての意味が変わるため、
@@ -115,8 +126,8 @@ final class StatusTextTests: XCTestCase {
     func testMicWordingIsNotAboutTheOtherPartysAudio() {
         for kind in [AnomalyKind.clipping, .lowLevel, .dropout] {
             XCTAssertFalse(
-                StatusText.description(of: kind, in: .mic).hasPrefix("相手"),
-                "\(kind) のマイク側の文言が相手の話から始まっている"
+                StatusText.description(of: kind, in: .mic).contains("相手"),
+                "\(kind) のマイク側の文言に相手の話が混ざっている"
             )
         }
     }

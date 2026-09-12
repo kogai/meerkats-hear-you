@@ -19,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 記録より先に出す。許可が下りずに記録が始まらなくても、
         // 「動いてはいるが測れていない」ことが表示から分かるようにするため。
-        let menuBar = MenuBarController(liveState: liveState)
+        // liveState はマイク側1本ぶん。受信音声を足すときは、LiveStateごと分ける。
+        let menuBar = MenuBarController(liveState: liveState, streamKind: .mic)
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.start()
         self.menuBar = menuBar

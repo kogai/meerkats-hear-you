@@ -77,7 +77,7 @@ public final class RecordingPipeline {
         aggregator = Aggregator(frameMs: configuration.frameMs)
         ring = FrameRingBuffer(capacity: configuration.framesPerDetailWindow)
         anomalies = AnomalyDetector(
-            thresholds: configuration.streamKind == .mic ? .mic : .output
+            thresholds: AnomalyDetector.Thresholds.for(configuration.streamKind)
         )
         anchors = AnchorScheduler(intervalSeconds: configuration.anchorIntervalSeconds)
     }

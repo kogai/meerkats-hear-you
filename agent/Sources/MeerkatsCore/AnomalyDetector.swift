@@ -15,7 +15,7 @@ public enum AnomalyKind: String, Equatable {
 /// 粗いことが分かっている。根拠の薄い通知を繰り返せば利用者は通知を切り、その瞬間に
 /// 「気づける」という要件は実質的に満たされなくなる。見逃しよりも誤検知のほうが高くつく。
 public struct AnomalyDetector {
-    public struct Thresholds {
+    public struct Thresholds: Equatable {
         /// 1秒のうちこの比率を超えてクリップしていれば異常とみなす。
         public var clipRatio: Double
         /// 発話しているのにこのレベルを下回っていれば低すぎるとみなす。
@@ -55,6 +55,16 @@ public struct AnomalyDetector {
         /// 見ている。適正な値は実機で測るまで分からないので、測る前に数字を動かさない。
         /// 呼び出し側を書き換えずに分岐できる形にしておくのが、いまできることになる。
         public static let output = Thresholds()
+
+        /// ストリーム種別から閾値を引く。**三項演算子で書かない。**
+        /// `StreamKind` に3つ目が増えたとき、三項演算子は黙ってどちらかに倒れる。
+        /// switch なら、そこでコンパイルが止まって決め忘れを教えてくれる。
+        public static func `for`(_ stream: StreamKind) -> Thresholds {
+            switch stream {
+            case .mic: return .mic
+            case .output: return .output
+            }
+        }
     }
 
     public let thresholds: Thresholds
