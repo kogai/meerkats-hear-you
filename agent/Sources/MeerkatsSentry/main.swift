@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var startedStreamId: Int64 = 0
 
             let capture = AudioCapture(
+                frameMs: configuration.frameMs,
                 makePipeline: { sampleRate in
                     var configuration = configuration
                     configuration.sampleRate = sampleRate

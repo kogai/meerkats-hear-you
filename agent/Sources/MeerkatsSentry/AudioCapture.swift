@@ -8,6 +8,7 @@ import MeerkatsCore
 /// 判断はすべて MeerkatsCore 側にあり、ここはバッファを渡すだけにしてある。
 public final class AudioCapture {
     public enum CaptureError: Error {
+        case alreadyRunning
         case permissionDenied
         case invalidInputFormat(channels: UInt32, sampleRate: Double)
         /// 記録の経路が、渡した率で組まれていなかった。
@@ -29,9 +30,17 @@ public final class AudioCapture {
 
     private var pipeline: RecordingPipeline?
 
+    private let frameMs: Int
+
+    /// - Parameter frameMs: 工場が作る経路のフレームの刻み。
+    ///   **工場を呼ぶ前に率が使えるかを決めるために要る。** 工場は記録にストリームの行を
+    ///   書くので、呼んでから弾くと、一度も読んでいないストリームが記録に残る。
     public init(
-        makePipeline: @escaping PipelineFactory, onError: @escaping (Error) -> Void
+        frameMs: Int,
+        makePipeline: @escaping PipelineFactory,
+        onError: @escaping (Error) -> Void
     ) {
+        self.frameMs = frameMs
         self.makePipeline = makePipeline
         self.onError = onError
     }
@@ -53,6 +62,10 @@ public final class AudioCapture {
     }
 
     public func start() throws {
+        // 2回目を黙って受け付けない。受け付けると、ストリームの行が記録に積まれ、
+        // 2本のタップが同じ経路を叩く。
+        guard pipeline == nil else { throw CaptureError.alreadyRunning }
+
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             throw CaptureError.permissionDenied
         }
@@ -65,32 +78,41 @@ public final class AudioCapture {
             )
         }
 
+        // **工場を呼ぶ前に率が使えるかを決める。** 1フレームのサンプル数は切り捨てで
+        // 整数になるので、割り切れない率だと1フレームごとに端数を捨てる。捨てた量は溜まり、
+        // 恒常的なずれになる。工場は記録にストリームの行を書くので、呼んでから弾くと、
+        // 一度も読んでいないストリームが記録に残る。
+        let exactFrameLength = format.sampleRate * Double(frameMs) / 1000.0
+        guard exactFrameLength == exactFrameLength.rounded(.down) else {
+            throw CaptureError.rateNotDivisibleIntoFrames(
+                sampleRate: format.sampleRate, frameMs: frameMs
+            )
+        }
+
         // 率はデバイスが決める。こちらの前提を押し付けない。
         let pipeline = try makePipeline(format.sampleRate)
 
         // **渡した率で組まれたことを確かめる。** 確かめないと、呼び出し側が引数を捨てて
-        // 既定の48kHzで組んでも通ってしまう。
-        guard pipeline.configuration.sampleRate == format.sampleRate else {
+        // 既定の48kHzで組んでも通ってしまう。ここで弾くのは呼び出し側の誤りなので、
+        // ストリームの行が残ってよい。残ったほうが原因が追える。
+        guard pipeline.configuration.sampleRate == format.sampleRate,
+              pipeline.configuration.frameMs == frameMs
+        else {
             throw CaptureError.pipelineRateMismatch(
                 device: format.sampleRate, pipeline: pipeline.configuration.sampleRate
             )
         }
-
-        // 1フレームのサンプル数は切り捨てで整数になるので、割り切れない率だと
-        // 1フレームごとに端数を捨てる。捨てた量は溜まり、恒常的なずれになる。
-        let exactFrameLength =
-            format.sampleRate * Double(pipeline.configuration.frameMs) / 1000.0
-        guard Double(pipeline.configuration.frameLength) == exactFrameLength else {
-            throw CaptureError.rateNotDivisibleIntoFrames(
-                sampleRate: format.sampleRate, frameMs: pipeline.configuration.frameMs
-            )
-        }
         self.pipeline = pipeline
 
+        // **タップの閉包に self を入れない。** 入れると、`pipeline` を可変にしたぶん、
+        // 音のスレッドからの読みとメインスレッドからの書きが競合する。
+        // 受信側(`ProcessTap`)が避けたのと同じ形で、こちらは `let` だったから無事だった。
+        //
         // bufferSize はヒントにすぎず、実測では約100msのバッファが届く。
         // 固定長への切り直しは RecordingPipeline 側が行う。
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.handle(buffer)
+        let onError = self.onError
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            AudioCapture.handle(buffer, pipeline: pipeline, onError: onError)
         }
         do {
             try engine.start()
@@ -115,7 +137,17 @@ public final class AudioCapture {
         }
     }
 
-    private func handle(_ buffer: AVAudioPCMBuffer) {
+    /// 音のスレッドから呼ばれる。
+    ///
+    /// 型メソッドにしてあるのは、タップの閉包に `self` を入れないためである。
+    /// 入れると、可変になった `pipeline` を音のスレッドから読むことになる。
+    /// **`Self.` ではなく型名で書く。** `Self.` は `final` や `static` を外した瞬間に
+    /// 黙って `self` を捕まえる。
+    private static func handle(
+        _ buffer: AVAudioPCMBuffer,
+        pipeline: RecordingPipeline,
+        onError: (Error) -> Void
+    ) {
         guard let channelData = buffer.floatChannelData else { return }
         let count = Int(buffer.frameLength)
         guard count > 0 else { return }
@@ -126,7 +158,7 @@ public final class AudioCapture {
         let wallUs = Int64(Date().timeIntervalSince1970 * 1_000_000)
 
         do {
-            try pipeline?.ingest(samples, wallUs: wallUs)
+            try pipeline.ingest(samples, wallUs: wallUs)
         } catch {
             onError(error)
         }
