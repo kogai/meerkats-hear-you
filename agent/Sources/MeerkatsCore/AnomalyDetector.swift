@@ -15,7 +15,7 @@ public enum AnomalyKind: String, Equatable {
 /// 粗いことが分かっている。根拠の薄い通知を繰り返せば利用者は通知を切り、その瞬間に
 /// 「気づける」という要件は実質的に満たされなくなる。見逃しよりも誤検知のほうが高くつく。
 public struct AnomalyDetector {
-    public struct Thresholds {
+    public struct Thresholds: Equatable {
         /// 1秒のうちこの比率を超えてクリップしていれば異常とみなす。
         public var clipRatio: Double
         /// 発話しているのにこのレベルを下回っていれば低すぎるとみなす。
@@ -43,6 +43,30 @@ public struct AnomalyDetector {
             self.dropoutSpreadDb = dropoutSpreadDb
             self.minSpeechRatio = minSpeechRatio
             self.sustainedSeconds = sustainedSeconds
+        }
+
+        /// 自分のマイク側。
+        public static let mic = Thresholds()
+
+        /// 受信音声側。**いまは数値がマイク側と同じである。**
+        ///
+        /// 分けてあるのは、同じ値だからではなく、**意味が違うから分けろと ADR-0008 が
+        /// 決めている**ためである。受信側の「音が小さい」は相手の問題で、こちらの入力レベルとは
+        /// 別の現象を見ている。
+        ///
+        /// **数値をどうするかは ADR-0008 に書いていない。** 適正な値は実機で測るまで分からず、
+        /// 測る前に動かせば根拠の無い数字が入る。呼び出し側を書き換えずに分岐できる形にして
+        /// おくのが、いまできることになる。
+        public static let output = Thresholds()
+
+        /// ストリーム種別から閾値を引く。**三項演算子で書かない。**
+        /// `StreamKind` に3つ目が増えたとき、三項演算子は黙ってどちらかに倒れる。
+        /// switch なら、そこでコンパイルが止まって決め忘れを教えてくれる。
+        public static func `for`(_ stream: StreamKind) -> Thresholds {
+            switch stream {
+            case .mic: return .mic
+            case .output: return .output
+            }
         }
     }
 

@@ -11,11 +11,15 @@ public final class AnalysisWindowController {
     private var window: NSWindow?
     private let store: RecordingStore
     private let streamId: Int64
+    private let streamKind: StreamKind
     private let frameDurationUs: Int64
 
-    public init(store: RecordingStore, streamId: Int64, frameDurationUs: Int64) {
+    public init(
+        store: RecordingStore, streamId: Int64, streamKind: StreamKind, frameDurationUs: Int64
+    ) {
         self.store = store
         self.streamId = streamId
+        self.streamKind = streamKind
         self.frameDurationUs = frameDurationUs
     }
 
@@ -27,6 +31,7 @@ public final class AnalysisWindowController {
         }
 
         let view = AnalysisView(
+            streamKind: streamKind,
             load: { [store, streamId] in
                 (try? store.seconds(streamId: streamId)) ?? []
             },
@@ -54,6 +59,7 @@ public final class AnalysisWindowController {
 }
 
 struct AnalysisView: View {
+    let streamKind: StreamKind
     let load: () -> [SecondRecord]
     let loadDetails: () -> [DetailWindow]
 
@@ -103,7 +109,7 @@ struct AnalysisView: View {
 
     private func label(for trigger: String) -> String {
         guard let kind = AnomalyKind(rawValue: trigger) else { return trigger }
-        return StatusText.description(of: kind)
+        return StatusText.description(of: kind, in: streamKind)
     }
 
     private func reload() {

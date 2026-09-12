@@ -9,8 +9,8 @@ public enum StoreError: Error, Equatable {
 }
 
 /// 観測しているストリームの種類。
-/// output は相手の声がこちらでどう鳴っているかで、検証は保留中(ADR-0006)。
-/// 受け皿だけ先に用意しておく。今入れておくコストはゼロに等しい。
+/// output は相手の声がこちらでどう鳴っているかで、取得手段は ADR-0008 で決めた。
+/// 同じ異常でも、どちらのストリームで起きたかで利用者にとっての意味が変わる。
 public enum StreamKind: String {
     case mic
     case output

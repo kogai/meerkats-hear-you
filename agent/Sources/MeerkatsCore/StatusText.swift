@@ -31,7 +31,11 @@ public enum StatusText {
     }
 
     /// メニューを開いたときに出す説明。こちらは幅に余裕があるので日本語で書く。
-    public static func detail(_ snapshot: LiveState.Snapshot) -> [String] {
+    ///
+    /// - Parameter stream: この LiveState が何を観測しているか。既定値を置かない。
+    ///   置くと「まだマイク側しか無い」という現状が引数の陰に隠れ、受信側を繋いだときに
+    ///   文言だけ取り残される。呼び出し側に毎回書かせるほうが安い。
+    public static func detail(_ snapshot: LiveState.Snapshot, in stream: StreamKind) -> [String] {
         var lines: [String] = []
 
         if snapshot.meanDbfs > Levels.floorDbfs {
@@ -41,29 +45,46 @@ public enum StatusText {
             lines.append("入力なし")
         }
 
-        lines.append(snapshot.isSpeaking ? "発話中" : "無音")
+        lines.append(speechText(isSpeaking: snapshot.isSpeaking, in: stream))
 
         if snapshot.activeAnomalies.isEmpty {
             lines.append("異常なし")
         } else {
             for anomaly in sorted(snapshot.activeAnomalies) {
-                lines.append(description(of: anomaly))
+                lines.append(description(of: anomaly, in: stream))
             }
         }
         return lines
     }
 
-    public static func description(of anomaly: AnomalyKind) -> String {
-        switch anomaly {
-        case .clipping: return "音が割れている(入力レベルが高すぎる)"
-        case .lowLevel: return "音が小さい(相手に届きにくい可能性)"
-        case .dropout: return "音が途切れている"
+    /// 発話の有無。ADR-0008の対応表の3行目で、**異常ではないがストリームで意味が変わる**。
+    /// 受信側の「発話中」は相手が話していることで、こちらが話していることではない。
+    public static func speechText(isSpeaking: Bool, in stream: StreamKind) -> String {
+        switch (stream, isSpeaking) {
+        case (.mic, true): return "発話中"
+        case (.mic, false): return "無音"
+        case (.output, true): return "相手が発話中"
+        case (.output, false): return "相手は無音"
+        }
+    }
+
+    /// 同じ異常でも、どちらのストリームで起きたかで**利用者にとっての意味が変わる**(ADR-0008)。
+    /// マイク側は自分で直せる話、受信側は相手に伝えるか、こちらでは手が無いかになる。
+    /// 一方の文言をもう一方に流用すると、**通知が嘘になる。**
+    public static func description(of anomaly: AnomalyKind, in stream: StreamKind) -> String {
+        switch (stream, anomaly) {
+        case (.mic, .clipping): return "音が割れている(入力レベルが高すぎる)"
+        case (.mic, .lowLevel): return "音が小さい(入力レベルが低すぎる)"
+        case (.mic, .dropout): return "音が途切れている"
+        case (.output, .clipping): return "相手の音が割れている(相手側の問題)"
+        case (.output, .lowLevel): return "相手の声が小さい(相手に伝えるとよい)"
+        case (.output, .dropout): return "相手の音が途切れている"
         }
     }
 
     /// 通知の本文。何が起きているかと、次に何を見ればよいかを1行ずつ。
-    public static func notificationBody(for anomaly: AnomalyKind) -> String {
-        description(of: anomaly)
+    public static func notificationBody(for anomaly: AnomalyKind, in stream: StreamKind) -> String {
+        description(of: anomaly, in: stream)
     }
 
     /// 原因がはっきりしているものを先に出す。

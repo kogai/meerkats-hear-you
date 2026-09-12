@@ -13,13 +13,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var analysis: AnalysisWindowController?
     private let liveState = LiveState()
 
+    /// 記録の設定。**ストリーム種別を決めている唯一の場所にする。**
+    /// 表示は記録より先に立ち上がるので、ここに置かないとメニューバーだけ別の値を持つ。
+    /// 受信音声を足すときに、文言だけ取り残されるのがその形になる。
+    private let configuration = RecordingPipeline.Configuration()
+
     private var sessionId: Int64 = 0
     private var streamId: Int64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 記録より先に出す。許可が下りずに記録が始まらなくても、
         // 「動いてはいるが測れていない」ことが表示から分かるようにするため。
-        let menuBar = MenuBarController(liveState: liveState)
+        // liveState はマイク側1本ぶん。受信音声を足すときは、LiveStateごと分ける。
+        let menuBar = MenuBarController(
+            liveState: liveState, streamKind: configuration.streamKind
+        )
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.start()
         self.menuBar = menuBar
@@ -49,13 +57,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = try RecordingStore(path: Self.databasePath())
             self.store = store
 
-            let configuration = RecordingPipeline.Configuration()
+            // onAnomaly は逃げる閉包なので、プロパティを直接参照すると self の明示を要る。
+            // 値型なのでここで写しておけば済む。
+            let configuration = self.configuration
+
             sessionId = try store.startSession(
                 wallUs: Self.nowWallUs(), agentVersion: Self.version
             )
             streamId = try store.addStream(
                 sessionId: sessionId,
-                kind: .mic,
+                kind: configuration.streamKind,
                 deviceName: AudioCapture.currentInputDeviceName(),
                 sampleRate: Int(configuration.sampleRate),
                 frameMs: configuration.frameMs
@@ -65,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pipeline = RecordingPipeline(
                 configuration: configuration, sink: sink, liveState: liveState
             )
-            pipeline.onAnomaly = { AnomalyNotifier.notify($0) }
+            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: configuration.streamKind) }
 
             let capture = AudioCapture(
                 pipeline: pipeline,
@@ -79,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             analysis = AnalysisWindowController(
                 store: store,
                 streamId: streamId,
+                streamKind: configuration.streamKind,
                 frameDurationUs: configuration.frameDurationUs
             )
             menuBar?.onOpenAnalysis = { [weak self] in self?.analysis?.show() }
