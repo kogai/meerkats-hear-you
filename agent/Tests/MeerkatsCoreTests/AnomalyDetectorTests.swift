@@ -126,11 +126,11 @@ final class AnomalyDetectorTests: XCTestCase {
         XCTAssertTrue(detector.active.contains(.dropout))
     }
 
-    /// 閾値をストリーム種別ごとに引けること。いまは同じ値だが、呼び出し側を書き換えずに
-    /// 分岐できる形になっていることを固定する(ADR-0008)。
     /// ストリーム種別から正しいほうを引けること。
-    /// **値が等しいことは確認しない。** いまは偶然等しいだけで、実機で測ったら分かれる
-    /// (ADR-0008)。等しさを固定すると、その正しい変更でこのテストが落ちる。
+    ///
+    /// **値が等しいことは確認しない。** ADR-0008 は意味が違うから分けろと言っているだけで、
+    /// 数値をどうするかは書いていない。いまの値が等しいのは、適正な値を実機で測っていない
+    /// からにすぎない。等しさをここで固定すると、測って分けた瞬間にこのテストが落ちる。
     func testThresholdsAreLookedUpByStream() {
         XCTAssertEqual(AnomalyDetector.Thresholds.for(.mic), AnomalyDetector.Thresholds.mic)
         XCTAssertEqual(AnomalyDetector.Thresholds.for(.output), AnomalyDetector.Thresholds.output)
