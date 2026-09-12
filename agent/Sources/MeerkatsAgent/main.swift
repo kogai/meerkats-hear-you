@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             report("マイクへのアクセスが許可されていません。システム設定で許可してください。")
             return
         }
+        // 通知が拒否されても記録は続ける。気づける手段が減るだけで、振り返りは成立する。
+        _ = await AnomalyNotifier.requestPermission()
 
         do {
             let store = try RecordingStore(path: Self.databasePath())
@@ -62,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pipeline = RecordingPipeline(
                 configuration: configuration, sink: sink, liveState: liveState
             )
+            pipeline.onAnomaly = { AnomalyNotifier.notify($0) }
 
             let capture = AudioCapture(
                 pipeline: pipeline,
