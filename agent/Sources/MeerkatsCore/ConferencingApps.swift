@@ -65,19 +65,30 @@ public enum ConferencingApps {
     /// 並びは優先順位そのもの。**会議専用のアプリを、通話もできるチャットアプリより先に置く。**
     /// 両方が鳴っているとき、会議をしている確率が高いのは前者だからで、それ以上の根拠は無い。
     /// 実機で外すようなら、ここを並べ替えれば済むようにしてある。
+    /// **この一覧は網羅ではない。** バンドルIDを知っているものしか書けず、社内ツールや
+    /// 地域ごとのサービスは原理的に漏れる。漏れたアプリは録られないだけで、誤って録ることは
+    /// 無い。最終的には利用者が自分で足せる形が要るが、それは別の決定になる。
     public static let bundleIdPrefixes: [String] = [
-        "us.zoom.xos",              // Zoom
-        "com.microsoft.teams",      // Microsoft Teams (teams2 も前方一致で入る)
-        "com.cisco.webexmeetingsapp",  // Webex
-        "com.tinyspeck.slackmacgap",   // Slack (ハドル)
-        "com.hnc.Discord",          // Discord
+        // 会議専用
+        "us.zoom.xos",                  // Zoom
+        "com.microsoft.teams",          // Microsoft Teams (teams2 も前方一致で入る)
+        "Cisco-Systems.Spark",          // Webex アプリ。com.cisco. では**始まらない**
+        "com.cisco.webexmeetingsapp",   // Webex Meetings
+        "com.webex.meetingmanager",     // Webex Meetings (旧)
+        "com.amazon.Chime",             // Amazon Chime
+        "com.logmein.GoToMeeting",      // GoToMeeting
+        "com.apple.FaceTime",           // FaceTime
+        // 通話もできるチャットアプリ
+        "com.tinyspeck.slackmacgap",    // Slack (ハドル)
+        "com.hnc.Discord",              // Discord
+        "com.skype.skype",              // Skype
     ]
 
     /// 鳴っている会議アプリから、録る一つを決める。
     ///
     /// - Parameter processes: Core Audio が持っているプロセスの一覧。順序は問わない。
     public static func select(from processes: [AudioProcess]) -> TapSelection {
-        let candidates = processes
+        let ranked = processes
             .filter { $0.isRunningOutput }
             .compactMap { process -> (rank: Int, process: AudioProcess)? in
                 guard let rank = priority(of: process) else { return nil }
@@ -86,14 +97,32 @@ public enum ConferencingApps {
             // 同じ優先順位のプロセスが複数あるとき、並びが起動順で揺れると
             // 録る対象が実行のたびに変わる。pid で縛って決定的にする。
             .sorted { ($0.rank, $0.process.pid) < ($1.rank, $1.process.pid) }
-            .map { $0.process }
 
-        guard let chosen = candidates.first else { return .idle }
-        let others = Array(candidates.dropFirst())
-        return others.isEmpty ? .tap(chosen) : .tapWithOthersSounding(chosen, others: others)
+        guard let chosen = ranked.first else { return .idle }
+
+        // **アプリごとに1つへ畳む。** 同じアプリの補助プロセスは「別の会議アプリ」ではない。
+        // 畳まないと、Zoom本体とそのヘルパーが両方鳴っているだけで「他の会議アプリも
+        // 鳴っています」と表示することになる。補助プロセスを拾うために前方一致にした以上、
+        // ヘルパーを持つアプリでは**常に**その嘘が出る。
+        var seenRanks: Set<Int> = [chosen.rank]
+        var others: [AudioProcess] = []
+        for entry in ranked.dropFirst() where !seenRanks.contains(entry.rank) {
+            seenRanks.insert(entry.rank)
+            others.append(entry.process)
+        }
+
+        return others.isEmpty
+            ? .tap(chosen.process)
+            : .tapWithOthersSounding(chosen.process, others: others)
     }
 
     /// 会議アプリなら `bundleIdPrefixes` での位置を、そうでなければ nil を返す。
+    ///
+    /// 返す位置は優先順位であると同時に、**アプリの同一性**でもある。同じ位置に当たった
+    /// プロセスは同じアプリのものとみなす。
+    ///
+    /// 照合は大文字小文字を区別する。バンドルIDは識別子であって表示名ではなく、
+    /// `Cisco-Systems.Spark` のように大文字を含むものが実在する。
     static func priority(of process: AudioProcess) -> Int? {
         guard let bundleId = process.bundleId else { return nil }
         return bundleIdPrefixes.firstIndex { bundleId.hasPrefix($0) }

@@ -74,9 +74,63 @@ final class ConferencingAppsTests: XCTestCase {
     func testTieIsBrokenDeterministicallyByPid() {
         let later = process("us.zoom.xos", pid: 900)
         let earlier = process("us.zoom.xos", pid: 200)
-        XCTAssertEqual(ConferencingApps.select(from: [later, earlier]).target, earlier)
-        XCTAssertEqual(ConferencingApps.select(from: [earlier, later]).target, earlier,
+        XCTAssertEqual(ConferencingApps.select(from: [later, earlier]), .tap(earlier))
+        XCTAssertEqual(ConferencingApps.select(from: [earlier, later]), .tap(earlier),
                        "入力の順序で結果が変わらないこと")
+    }
+
+    /// **同じアプリの補助プロセスは「別の会議アプリ」ではない。**
+    /// 畳まないと、Zoom本体とヘルパーが鳴っているだけで「他の会議アプリも鳴っています」と
+    /// 表示する。補助プロセスを拾うために前方一致にした以上、ヘルパーを持つアプリでは
+    /// 常にその嘘が出る。
+    func testHelperOfTheSameAppIsNotReportedAsAnotherApp() {
+        let zoom = process("us.zoom.xos", pid: 100)
+        let helper = process("us.zoom.xos.helper", pid: 101, name: "zoom.us Helper")
+        XCTAssertEqual(ConferencingApps.select(from: [zoom, helper]), .tap(zoom))
+    }
+
+    /// 畳むのはアプリ単位であって、他のアプリまで消してはいけない。
+    func testFoldingKeepsOneEntryPerApp() {
+        let zoom = process("us.zoom.xos", pid: 100)
+        let helper = process("us.zoom.xos.helper", pid: 101)
+        let slack = process("com.tinyspeck.slackmacgap", pid: 200)
+        let slackHelper = process("com.tinyspeck.slackmacgap.helper", pid: 201)
+        XCTAssertEqual(
+            ConferencingApps.select(from: [helper, slackHelper, zoom, slack]),
+            .tapWithOthersSounding(zoom, others: [slack]),
+            "アプリごとに1つ。ヘルパーは残らない")
+    }
+
+    /// 一覧のどの項目も到達可能であること。書いたが一度も当たらない項目を残さない。
+    func testEveryPrefixMatchesItself() {
+        for prefix in ConferencingApps.bundleIdPrefixes {
+            XCTAssertEqual(
+                ConferencingApps.select(from: [process(prefix)]).target?.bundleId, prefix,
+                "\(prefix) がどのプロセスにも当たらない")
+        }
+    }
+
+    /// **一覧の中に、他の項目の接頭辞になっているものが無いこと。**
+    /// あると firstIndex が先に当たったほうを返し、優先順位が意図とずれる。
+    /// さらに、別々のアプリが同じ位置に畳まれて片方が表示から消える。
+    func testPrefixesDoNotShadowEachOther() {
+        for (index, prefix) in ConferencingApps.bundleIdPrefixes.enumerated() {
+            for (otherIndex, other) in ConferencingApps.bundleIdPrefixes.enumerated()
+            where index != otherIndex {
+                XCTAssertFalse(
+                    other.hasPrefix(prefix),
+                    "\(prefix) が \(other) の接頭辞になっている")
+            }
+        }
+    }
+
+    /// バンドルIDは識別子であって表示名ではない。大文字小文字を区別する。
+    /// 区別をやめると `com.apple.facetimed` のような別物を拾いうる。
+    func testMatchingIsCaseSensitive() {
+        XCTAssertNil(ConferencingApps.priority(of: process("US.ZOOM.XOS")))
+        XCTAssertNil(ConferencingApps.priority(of: process("cisco-systems.spark")))
+        XCTAssertNotNil(ConferencingApps.priority(of: process("Cisco-Systems.Spark")),
+                        "Webexアプリは com.cisco. では始まらない")
     }
 
     /// ブラウザを対象にしないのは決定であって、書き忘れではない(ADR-0008)。
