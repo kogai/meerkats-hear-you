@@ -84,9 +84,11 @@ final class RecordingStoreRecordsTests: XCTestCase {
     }
 
     func testAnchorsRoundTrip() throws {
+        // 単調時計が300秒進む間に、実時刻は300秒と1msぶん進んだ状況。
+        // この1msの食い違いが、そのまま換算の不確かさになる。
         try store.appendAnchor(sessionId: sessionId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
         try store.appendAnchor(
-            sessionId: sessionId, ClockAnchor(monotonicUs: 300_000_000, wallUs: 300_001_000)
+            sessionId: sessionId, ClockAnchor(monotonicUs: 300_000_000, wallUs: 300_002_000)
         )
 
         let anchors = try store.anchors(sessionId: sessionId)
