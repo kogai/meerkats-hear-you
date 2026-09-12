@@ -8,6 +8,8 @@ public final class RecordingPipeline {
     public struct Configuration {
         public var frameMs: Int
         public var sampleRate: Double
+        /// 詳細層として残す長さ。異常の開始前を含めるため、リングバッファはこの秒数ぶん持つ。
+        public var detailWindowSeconds: Int
         /// 常時層をまとめてコミットする間隔。
         public var flushIntervalSeconds: Int
         public var anchorIntervalSeconds: Int
@@ -15,22 +17,26 @@ public final class RecordingPipeline {
         public init(
             frameMs: Int = 20,
             sampleRate: Double = 48_000,
+            detailWindowSeconds: Int = 10,
             flushIntervalSeconds: Int = 10,
             anchorIntervalSeconds: Int = 300
         ) {
             self.frameMs = frameMs
             self.sampleRate = sampleRate
+            self.detailWindowSeconds = detailWindowSeconds
             self.flushIntervalSeconds = flushIntervalSeconds
             self.anchorIntervalSeconds = anchorIntervalSeconds
         }
 
         var frameLength: Int { Int(sampleRate * Double(frameMs) / 1000.0) }
         public var frameDurationUs: Int64 { Int64(frameMs) * 1000 }
+        var framesPerDetailWindow: Int { detailWindowSeconds * (1000 / frameMs) }
     }
 
     /// 記録の出力先。テストでは差し替える。
     public protocol Sink: AnyObject {
         func write(seconds: [SecondRecord]) throws
+        func write(detail: DetailWindow) throws
         func write(anchor: ClockAnchor) throws
     }
 
@@ -43,10 +49,15 @@ public final class RecordingPipeline {
     private var framer: Framer
     private var detector: SpeechDetector
     private var aggregator: Aggregator
+    private var ring: FrameRingBuffer
+    private var anomalies: AnomalyDetector
     private var anchors: AnchorScheduler
 
     private var pendingSeconds: [SecondRecord] = []
     private var frameIndex: Int64 = 0
+
+    /// 異常に入った瞬間に呼ばれる。通知の送出に使う(ADR-0005)。
+    public var onAnomaly: ((AnomalyKind) -> Void)?
 
     public init(
         configuration: Configuration = Configuration(),
@@ -60,6 +71,8 @@ public final class RecordingPipeline {
         framer = Framer(frameLength: configuration.frameLength)
         detector = SpeechDetector()
         aggregator = Aggregator(frameMs: configuration.frameMs)
+        ring = FrameRingBuffer(capacity: configuration.framesPerDetailWindow)
+        anomalies = AnomalyDetector()
         anchors = AnchorScheduler(intervalSeconds: configuration.anchorIntervalSeconds)
     }
 
@@ -86,6 +99,7 @@ public final class RecordingPipeline {
             clipRatio: Levels.clipRatio(frame),
             isSpeech: detector.push(dbfs)
         )
+        ring.append(metrics)
 
         if let anchor = anchors.anchorIfDue(monotonicUs: monotonicUs, wallUs: wallUs) {
             try sink.write(anchor: anchor)
@@ -105,11 +119,26 @@ public final class RecordingPipeline {
         }
         pendingSeconds.append(record)
 
+        let entered = anomalies.push(record, noiseFloorDbfs: detector.noiseFloorDbfs)
         liveState.update(
             record: record,
             noiseFloorDbfs: detector.noiseFloorDbfs,
-            anomalies: []
+            anomalies: anomalies.active
         )
+
+        if let entered {
+            // リングバッファには異常が始まる前のフレームも入っている。
+            // 通知より先に書き出すのは、通知を見て分析を開いたときに記録が揃っているようにするため。
+            let frames = ring.snapshot()
+            if let first = frames.first {
+                try sink.write(
+                    detail: DetailWindow(
+                        startUs: first.monotonicUs, trigger: entered.rawValue, frames: frames
+                    )
+                )
+            }
+            onAnomaly?(entered)
+        }
     }
 
     /// 溜まっている常時層を書き出す。セッション終了時にも呼ぶ。

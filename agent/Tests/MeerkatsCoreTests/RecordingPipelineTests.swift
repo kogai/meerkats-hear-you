@@ -4,6 +4,7 @@ import XCTest
 
 private final class CollectingSink: RecordingPipeline.Sink {
     var seconds: [SecondRecord] = []
+    var details: [DetailWindow] = []
     var anchors: [ClockAnchor] = []
     /// 1回の write(seconds:) で渡された件数。まとめ書きの区切りを確かめるのに使う。
     var batchSizes: [Int] = []
@@ -13,6 +14,7 @@ private final class CollectingSink: RecordingPipeline.Sink {
         batchSizes.append(records.count)
     }
 
+    func write(detail: DetailWindow) throws { details.append(detail) }
     func write(anchor: ClockAnchor) throws { anchors.append(anchor) }
 }
 
@@ -126,5 +128,60 @@ final class RecordingPipelineTests: XCTestCase {
 
         XCTAssertNotNil(observed, "出力先が解放されると記録が静かに落ちる")
         XCTAssertEqual(observed?.seconds.count, 1)
+    }
+
+    /// クリッピングが続けば異常として検知され、詳細層が書き出されること。
+    func testSustainedClippingWritesDetailAndNotifies() throws {
+        let (pipeline, sink, _) = makePipeline()
+        var notified: [AnomalyKind] = []
+        pipeline.onAnomaly = { notified.append($0) }
+
+        try pipeline.ingest(samples(seconds: 6, amplitude: 1.0), wallUs: 0)
+        try pipeline.finish()
+
+        XCTAssertEqual(notified, [.clipping], "入った瞬間の1回だけ")
+        XCTAssertEqual(sink.details.count, 1)
+        XCTAssertEqual(sink.details.first?.trigger, AnomalyKind.clipping.rawValue)
+        XCTAssertFalse(sink.details.first?.frames.isEmpty ?? true)
+    }
+
+    /// 詳細層には異常の「開始前」のフレームが含まれること。
+    /// リングバッファを常時回している理由そのもの。
+    func testDetailWindowIncludesFramesBeforeTheAnomaly() throws {
+        let (pipeline, sink, _) = makePipeline { $0.detailWindowSeconds = 10 }
+        pipeline.onAnomaly = { _ in }
+
+        try pipeline.ingest(samples(seconds: 2, amplitude: 0.1), wallUs: 0)  // 正常
+        try pipeline.ingest(samples(seconds: 4, amplitude: 1.0), wallUs: 0)  // クリップ
+        try pipeline.finish()
+
+        let window = try XCTUnwrap(sink.details.first)
+        XCTAssertEqual(window.startUs, 0, "異常より前から始まっている")
+        XCTAssertTrue(
+            window.frames.contains { $0.clipRatio == 0 },
+            "クリップしていないフレームも含まれる"
+        )
+    }
+
+    /// 常時表示にも継続中の異常が映ること。表示はここからしか読まない。
+    func testLiveStateCarriesActiveAnomalies() throws {
+        let (pipeline, _, state) = makePipeline()
+        try pipeline.ingest(samples(seconds: 6, amplitude: 1.0), wallUs: 0)
+
+        XCTAssertEqual(state.snapshot().activeAnomalies, [.clipping])
+    }
+
+    /// 無音が続くだけでは異常にしない。発話が無い区間まで拾うと通知が鳴り続け、
+    /// 利用者は通知を切る。
+    func testQuietSignalDoesNotTriggerAnomaly() throws {
+        let (pipeline, sink, _) = makePipeline()
+        var notified: [AnomalyKind] = []
+        pipeline.onAnomaly = { notified.append($0) }
+
+        try pipeline.ingest(samples(seconds: 6, amplitude: 0.0005), wallUs: 0)
+        try pipeline.finish()
+
+        XCTAssertTrue(notified.isEmpty)
+        XCTAssertTrue(sink.details.isEmpty)
     }
 }
