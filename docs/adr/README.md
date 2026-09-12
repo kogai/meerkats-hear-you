@@ -20,4 +20,4 @@
 | [0006](0006-file-exchange-before-p2p.md) | 突合は初期版ではファイル交換で行い、P2Pは後回しにする | Accepted |
 | [0007](0007-signed-release-from-ci.md) | 配布用バイナリはCIで署名済みとして作り、タグで公開する | Accepted |
 | [0008](0008-process-tap-for-received-audio.md) | 受信音声はCore Audioのプロセスタップで取得し、会議アプリに限定する | Accepted |
-| [0011](0011-module-names-from-meerkat-ecology.md) | モジュールの名前をミーアキャットの生態から採る | Proposed |
+| [0011](0011-module-names-from-meerkat-ecology.md) | モジュールの名前をミーアキャットの生態から採る | Accepted |
