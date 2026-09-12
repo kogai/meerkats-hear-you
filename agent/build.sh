@@ -4,6 +4,15 @@
 # スパイクで確認済みの手順をそのまま使う。ad-hoc署名ではコードを1行変えるだけで
 # TCCの許可を失うため、開発中は SIGN_IDENTITY に自己署名証明書を指定すること。
 # 詳細は docs/experiments/macos-app-bundle-spike-result.md を参照。
+#
+# 環境変数:
+#   SIGN_IDENTITY  署名に使う identity。未指定ならad-hoc(許可を失う。ADR-0007)
+#   VERSION        CFBundleShortVersionString。リリースではタグから渡す
+#   BUILD          CFBundleVersion。同じ VERSION でも作り直すたびに増やす
+#   UNIVERSAL      1 なら arm64 と x86_64 の両方を含むバイナリにする
+#   HARDENED       1 なら hardened runtime + entitlement + タイムスタンプで署名する。
+#                  公証に出すならこれが要る。既定で切ってあるのは、実機で確認済みの
+#                  開発時の署名の条件を、こちら側の都合で変えないため
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -11,10 +20,19 @@ APP_NAME="Meerkats"
 EXECUTABLE="MeerkatsAgent"
 BUNDLE_ID="dev.meerkats.agent"
 APP_DIR="build/${APP_NAME}.app"
+ENTITLEMENTS="build/${APP_NAME}.entitlements"
+VERSION="${VERSION:-0.1}"
+BUILD="${BUILD:-1}"
 
-echo "=== SPM でビルド ==="
-swift build -c release --product "$EXECUTABLE"
-BIN="$(swift build -c release --show-bin-path)/${EXECUTABLE}"
+# 配布物は universal にする。ランナーは arm64 だが、受け取る側がIntelでない保証はない。
+BUILD_ARGS=(-c release --product "$EXECUTABLE")
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+	BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
+
+echo "=== SPM でビルド (${VERSION} build ${BUILD}) ==="
+swift build "${BUILD_ARGS[@]}"
+BIN="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)/${EXECUTABLE}"
 
 echo "=== .app バンドルを組み立て ==="
 rm -rf "$APP_DIR"
@@ -38,9 +56,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1</string>
+	<string>${VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>${BUILD}</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -51,9 +69,29 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# 公証には hardened runtime が要る。そしてその下では、この entitlement が無いと
+# マイクをまったく取れない。付け忘れると、署名も公証も通ったうえで無音だけが録れる。
+cat > "$ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+
 IDENTITY="${SIGN_IDENTITY:--}"
+SIGN_ARGS=(--force --sign "$IDENTITY" --identifier "$BUNDLE_ID")
+if [ "${HARDENED:-0}" = "1" ]; then
+	# タイムスタンプは外部サーバに問い合わせる。開発ビルドで既定にすると、
+	# オフラインのときにビルドごと失敗する。
+	SIGN_ARGS+=(--options runtime --entitlements "$ENTITLEMENTS" --timestamp)
+fi
+
 echo "=== 署名 (identity: ${IDENTITY}) ==="
-codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR"
+codesign "${SIGN_ARGS[@]}" "$APP_DIR"
 codesign --verify --strict "$APP_DIR" && echo "署名の検証: OK"
 
 if [ "$IDENTITY" = "-" ]; then
