@@ -23,3 +23,4 @@
 | [0009](0009-record-exchange-transport.md) | 記録の交換経路はNAT越えのP2Pとし、ランデブーだけを置く | Accepted |
 | [0010](0010-recording-floor-broadband-only.md) | 記録・送付する水準を Bolthole と定め、帯域を分けない | Accepted |
 | [0011](0011-module-names-from-meerkat-ecology.md) | モジュールの名前をミーアキャットの生態から採る | Accepted |
+| [0012](0012-multiparty-meetings.md) | 多人数の会議に対応し、話者の分類はしない | Accepted |
