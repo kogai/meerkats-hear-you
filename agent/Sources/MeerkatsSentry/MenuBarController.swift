@@ -8,13 +8,18 @@ import MeerkatsCore
 public final class MenuBarController {
     private let statusItem: NSStatusItem
     private let liveState: LiveState
+    private let streamKind: StreamKind
     private var timer: Timer?
     private let refreshInterval: TimeInterval
 
+    /// - Parameter streamKind: この liveState が観測しているストリーム。文言がこれで変わる。
     /// - Parameter refreshInterval: 表示の更新間隔。終日動き続けるので控えめにする。
     ///   ADR-0004で書き込み頻度を電力の観点で絞ったが、常時表示はそこに別の消費を足す。
-    public init(liveState: LiveState, refreshInterval: TimeInterval = 1.0) {
+    public init(
+        liveState: LiveState, streamKind: StreamKind, refreshInterval: TimeInterval = 1.0
+    ) {
         self.liveState = liveState
+        self.streamKind = streamKind
         self.refreshInterval = refreshInterval
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     }
@@ -50,7 +55,7 @@ public final class MenuBarController {
 
     private func rebuildMenu(_ snapshot: LiveState.Snapshot) {
         let menu = NSMenu()
-        for line in StatusText.detail(snapshot) {
+        for line in StatusText.detail(snapshot, in: streamKind) {
             let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
