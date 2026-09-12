@@ -43,6 +43,7 @@ public final class RecordingStore {
         try exec("PRAGMA synchronous = NORMAL;")
         try exec("PRAGMA foreign_keys = ON;")
         try createSchema()
+        try createRecordSchema()
     }
 
     deinit {
