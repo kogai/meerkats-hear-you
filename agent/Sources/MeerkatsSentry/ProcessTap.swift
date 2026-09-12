@@ -24,6 +24,8 @@ public final class ProcessTap {
             formatId: AudioFormatID, flags: AudioFormatFlags,
             channels: UInt32, bitsPerChannel: UInt32
         )
+        /// 記録の経路が、渡した率で組まれていなかった。
+        case pipelineRateMismatch(tap: Double, pipeline: Double)
         case ioProcFailed(OSStatus)
     }
 
@@ -71,6 +73,8 @@ public final class ProcessTap {
             // という形が普通に起きる。呼び出し側は start が投げたら stop を呼ばないので、
             // ここで戻さないと Core Audio の側にタップが残り続ける。
             teardown()
+            // 作りかけの経路も手放す。残すと、一度も読んでいないものを stop() が締めにいける。
+            pipeline = nil
             throw error
         }
     }
@@ -102,6 +106,15 @@ public final class ProcessTap {
 
         // 率はタップが決める。こちらの前提を押し付けない。
         let pipeline = makePipeline(format.mSampleRate)
+
+        // **渡した率で組まれたことを確かめる。** 確かめないと、呼び出し側が引数を捨てて
+        // 既定の48kHzで組んでも通ってしまう。そうなると44.1kHzの機械で約9%ずれた時系列が
+        // 黙って記録される。**「毎回落ちる」を「静かにずれる」に振り替えただけになる。**
+        guard pipeline.configuration.sampleRate == format.mSampleRate else {
+            throw TapError.pipelineRateMismatch(
+                tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate
+            )
+        }
         self.pipeline = pipeline
 
         // **IOの閉包に self を入れない。** 入れると、最後の強参照がIOスレッドの中で
@@ -110,7 +123,7 @@ public final class ProcessTap {
         let onError = self.onError
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcId, aggregateId, nil) {
             _, inputData, _, _, _ in
-            Self.handle(inputData, pipeline: pipeline, onError: onError)
+            ProcessTap.handle(inputData, pipeline: pipeline, onError: onError)
         }
         guard status == noErr, let ioProcId else { throw TapError.ioProcFailed(status) }
 
@@ -251,7 +264,9 @@ public final class ProcessTap {
               format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               format.mBitsPerChannel == 32,
               format.mChannelsPerFrame == 1,
-              format.mSampleRate > 0
+              // 実在する最低の音声の率。0より大きいだけだと、1フレームのサンプル数が
+              // 0に落ちて Framer の前提を割る。
+              format.mSampleRate >= 8000
         else {
             throw TapError.unsupportedFormat(
                 formatId: format.mFormatID, flags: format.mFormatFlags,
@@ -271,7 +286,12 @@ public final class ProcessTap {
     /// 確保済みのリングに写して別のスレッドで捌く形になる。**片方だけ直すと、
     /// 2つの経路で理由の違う実装が並ぶ。**
     ///
-    /// 型メソッドにしてあるのは、IOの閉包に `self` を入れないためである。
+    /// 型メソッドにしてあるのは、IOの閉包に `self` を入れないためである。**`Self.` ではなく
+    /// 型名で書く。** `Self.` は `final` や `static` を外した瞬間に黙って `self` を捕まえ、
+    /// 症状は循環参照になって `deinit` が一度も走らなくなる。
+    ///
+    /// なお `onError` は呼び出し側が書く閉包なので、**そこで自分を強く捕まえれば
+    /// 同じ循環が外から作れる。** 呼び出し側で弱く持つこと。
     private static func handle(
         _ bufferList: UnsafePointer<AudioBufferList>,
         pipeline: RecordingPipeline,
