@@ -39,6 +39,18 @@ public final class ProcessTap {
     /// 手順は3段。**タップを作り、それだけを載せた集約デバイスを作り、IOを回す。**
     /// タップ単体では音を取り出せず、デバイスに載せて初めて読める。
     public func start(pid: pid_t) throws {
+        do {
+            try beginTapping(pid: pid)
+        } catch {
+            // **途中で失敗したぶんを必ず戻す。** タップは作れたが集約デバイスで落ちた、
+            // という形が普通に起きる。呼び出し側は start が投げたら stop を呼ばないので、
+            // ここで戻さないと Core Audio の側にタップが残り続ける。
+            teardown()
+            throw error
+        }
+    }
+
+    private func beginTapping(pid: pid_t) throws {
         let processObject = try processObject(for: pid)
 
         // **モノのミックスダウンで取る。** 話者の分類はしないと決めてあるので(ADR-0012)、
@@ -60,9 +72,12 @@ public final class ProcessTap {
         // **パイプラインが前提にしている値と突き合わせる。** サンプル率が違えば、
         // 1秒ぶんとして切り出す長さがずれる。ずれても記録は残るので、値を見るまで気づかない。
         // チャンネル数が1でなければ、インターリーブを1本の列として読むことになる。
+        // Float32 でなければ、別の並びのビットを Float として読むことになる。
         guard
             format.mChannelsPerFrame == 1,
-            format.mSampleRate == pipeline.configuration.sampleRate
+            format.mSampleRate == pipeline.configuration.sampleRate,
+            format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+            format.mBitsPerChannel == 32
         else {
             throw TapError.unsupportedFormat(
                 channels: format.mChannelsPerFrame, sampleRate: format.mSampleRate
@@ -79,7 +94,22 @@ public final class ProcessTap {
         guard status == noErr else { throw TapError.ioProcFailed(status) }
     }
 
+    /// 記録を締めて、タップを畳む。
     public func stop() {
+        teardown()
+        do {
+            try pipeline.finish()
+        } catch {
+            onError(error)
+        }
+    }
+
+    /// Core Audio の資源だけを戻す。**記録は締めない。**
+    ///
+    /// `stop()` と分けてあるのは、`start` が途中で失敗したときにも呼ぶためである。
+    /// そこで `pipeline.finish()` まで走ると、1本も読んでいない記録を締めることになる。
+    /// 何度呼んでも同じ結果になるようにしてある。
+    private func teardown() {
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
@@ -95,12 +125,12 @@ public final class ProcessTap {
             AudioHardwareDestroyProcessTap(tapId)
             tapId = AudioObjectID(kAudioObjectUnknown)
         }
+    }
 
-        do {
-            try pipeline.finish()
-        } catch {
-            onError(error)
-        }
+    /// 呼び出し側が stop を呼び忘れても、タップだけは戻す。
+    /// **Core Audio の資源はプロセスの生存期間より長く残りうる。**
+    deinit {
+        teardown()
     }
 
     // MARK: - Core Audio の手続き
@@ -169,8 +199,14 @@ public final class ProcessTap {
 
     // MARK: - 読み取り
 
-    /// IOスレッドから呼ばれる。**ここで時間を使わない。** 遅れると音が途切れ、
+    /// IOスレッドから**直に**呼ばれる。**ここで時間を使わない。** 遅れると音が途切れ、
     /// 記録しようとしている当の現象を自分で作ることになる。
+    ///
+    /// **いまはその約束を守れていない。** 配列を確保し、時刻を引き、パイプラインを回す。
+    /// パイプラインは10秒に1回 SQLite まで到達するので、その1回はIOスレッドで書き込む。
+    /// マイク側(`AudioCapture`)も同じ形なので、直すなら両方まとめて、
+    /// 確保済みのリングに写して別のスレッドで捌く形になる。**片方だけ直すと、
+    /// 2つの経路で理由の違う実装が並ぶ。**
     private func handle(_ bufferList: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(
             UnsafeMutablePointer(mutating: bufferList)
