@@ -47,23 +47,31 @@ public enum StatusText {
             lines.append("異常なし")
         } else {
             for anomaly in sorted(snapshot.activeAnomalies) {
-                lines.append(description(of: anomaly))
+                // LiveStateが持つ異常は、いまのところマイク側のものだけ。
+                // 受信側のストリームが入った時点で、種別ごとに分ける。
+                lines.append(description(of: anomaly, in: .mic))
             }
         }
         return lines
     }
 
-    public static func description(of anomaly: AnomalyKind) -> String {
-        switch anomaly {
-        case .clipping: return "音が割れている(入力レベルが高すぎる)"
-        case .lowLevel: return "音が小さい(相手に届きにくい可能性)"
-        case .dropout: return "音が途切れている"
+    /// 同じ異常でも、どちらのストリームで起きたかで**利用者にとっての意味が変わる**(ADR-0008)。
+    /// マイク側は自分で直せる話、受信側は相手に伝えるか、こちらでは手が無いかになる。
+    /// 一方の文言をもう一方に流用すると、**通知が嘘になる。**
+    public static func description(of anomaly: AnomalyKind, in stream: StreamKind) -> String {
+        switch (stream, anomaly) {
+        case (.mic, .clipping): return "音が割れている(入力レベルが高すぎる)"
+        case (.mic, .lowLevel): return "音が小さい(相手に届きにくい可能性)"
+        case (.mic, .dropout): return "音が途切れている"
+        case (.output, .clipping): return "相手の音が割れている(相手側の問題)"
+        case (.output, .lowLevel): return "相手の声が小さい(相手に伝えるとよい)"
+        case (.output, .dropout): return "相手の音が途切れている"
         }
     }
 
     /// 通知の本文。何が起きているかと、次に何を見ればよいかを1行ずつ。
-    public static func notificationBody(for anomaly: AnomalyKind) -> String {
-        description(of: anomaly)
+    public static func notificationBody(for anomaly: AnomalyKind, in stream: StreamKind) -> String {
+        description(of: anomaly, in: stream)
     }
 
     /// 原因がはっきりしているものを先に出す。

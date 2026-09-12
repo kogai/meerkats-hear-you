@@ -125,4 +125,13 @@ final class AnomalyDetectorTests: XCTestCase {
         XCTAssertTrue(detector.active.contains(.lowLevel))
         XCTAssertTrue(detector.active.contains(.dropout))
     }
+
+    /// 閾値をストリーム種別ごとに引けること。いまは同じ値だが、呼び出し側を書き換えずに
+    /// 分岐できる形になっていることを固定する(ADR-0008)。
+    func testThresholdsAreAddressableByStream() {
+        XCTAssertEqual(AnomalyDetector.Thresholds.mic.lowLevelDbfs,
+                       AnomalyDetector.Thresholds.output.lowLevelDbfs,
+                       "いまは同じ値でよい。違えるのは実機で測ってから")
+        XCTAssertEqual(AnomalyDetector.Thresholds.mic.sustainedSeconds, 3)
+    }
 }

@@ -16,15 +16,15 @@ public enum AnomalyNotifier {
         }
     }
 
-    public static func notify(_ anomaly: AnomalyKind) {
+    public static func notify(_ anomaly: AnomalyKind, in stream: StreamKind) {
         let content = UNMutableNotificationContent()
         content.title = "音声の状態"
-        content.body = StatusText.notificationBody(for: anomaly)
+        content.body = StatusText.notificationBody(for: anomaly, in: stream)
 
         // トリガーがすでに保守的なので、ここでさらに抑制はしない。
         // 抑制を二重にかけると、どちらが効いて鳴らなかったのかが分からなくなる。
         let request = UNNotificationRequest(
-            identifier: "anomaly.\(anomaly.rawValue).\(Date().timeIntervalSince1970)",
+            identifier: "anomaly.\(stream.rawValue).\(anomaly.rawValue).\(Date().timeIntervalSince1970)",
             content: content,
             trigger: nil
         )

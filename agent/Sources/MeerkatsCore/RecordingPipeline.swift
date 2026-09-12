@@ -6,6 +6,8 @@ import Foundation
 /// 実機でしか動かせないのはバッファを供給する側だけになり、繋ぎ込みの論理はCIで検証できる。
 public final class RecordingPipeline {
     public struct Configuration {
+        /// どちらのストリームを扱っているか。閾値と文言がこれで変わる(ADR-0008)。
+        public var streamKind: StreamKind
         public var frameMs: Int
         public var sampleRate: Double
         /// 詳細層として残す長さ。異常の開始前を含めるため、リングバッファはこの秒数ぶん持つ。
@@ -15,12 +17,14 @@ public final class RecordingPipeline {
         public var anchorIntervalSeconds: Int
 
         public init(
+            streamKind: StreamKind = .mic,
             frameMs: Int = 20,
             sampleRate: Double = 48_000,
             detailWindowSeconds: Int = 10,
             flushIntervalSeconds: Int = 10,
             anchorIntervalSeconds: Int = 300
         ) {
+            self.streamKind = streamKind
             self.frameMs = frameMs
             self.sampleRate = sampleRate
             self.detailWindowSeconds = detailWindowSeconds
@@ -72,7 +76,9 @@ public final class RecordingPipeline {
         detector = SpeechDetector()
         aggregator = Aggregator(frameMs: configuration.frameMs)
         ring = FrameRingBuffer(capacity: configuration.framesPerDetailWindow)
-        anomalies = AnomalyDetector()
+        anomalies = AnomalyDetector(
+            thresholds: configuration.streamKind == .mic ? .mic : .output
+        )
         anchors = AnchorScheduler(intervalSeconds: configuration.anchorIntervalSeconds)
     }
 

@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             streamId = try store.addStream(
                 sessionId: sessionId,
-                kind: .mic,
+                kind: configuration.streamKind,
                 deviceName: AudioCapture.currentInputDeviceName(),
                 sampleRate: Int(configuration.sampleRate),
                 frameMs: configuration.frameMs
@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pipeline = RecordingPipeline(
                 configuration: configuration, sink: sink, liveState: liveState
             )
-            pipeline.onAnomaly = { AnomalyNotifier.notify($0) }
+            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: configuration.streamKind) }
 
             let capture = AudioCapture(
                 pipeline: pipeline,
@@ -79,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             analysis = AnalysisWindowController(
                 store: store,
                 streamId: streamId,
+                streamKind: configuration.streamKind,
                 frameDurationUs: configuration.frameDurationUs
             )
             menuBar?.onOpenAnalysis = { [weak self] in self?.analysis?.show() }

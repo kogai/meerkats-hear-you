@@ -44,6 +44,17 @@ public struct AnomalyDetector {
             self.minSpeechRatio = minSpeechRatio
             self.sustainedSeconds = sustainedSeconds
         }
+
+        /// 自分のマイク側。
+        public static let mic = Thresholds()
+
+        /// 受信音声側。**いまは数値がマイク側と同じである。**
+        ///
+        /// 分けてあるのは、同じ値だからではなく、**意味が違うため後で必ず分かれるから**である
+        /// (ADR-0008)。受信側の「音が小さい」は相手の問題で、こちらの入力レベルとは別の現象を
+        /// 見ている。適正な値は実機で測るまで分からないので、測る前に数字を動かさない。
+        /// 呼び出し側を書き換えずに分岐できる形にしておくのが、いまできることになる。
+        public static let output = Thresholds()
     }
 
     public let thresholds: Thresholds
