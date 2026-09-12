@@ -36,7 +36,7 @@ public final class ProcessTap {
     /// **率を渡してから作らせるのが要点。** タップの率は出力デバイスの既定に従うので、
     /// こちらから決められない。48kHz 前提で組んだ経路を後から当てると、44.1kHz の機械では
     /// 毎回弾かれるか、弾かなければ約9%ずれた時系列が黙って記録される。
-    public typealias PipelineFactory = (_ sampleRate: Double) -> RecordingPipeline
+    public typealias PipelineFactory = (_ sampleRate: Double) throws -> RecordingPipeline
 
     private let makePipeline: PipelineFactory
     private let onError: (Error) -> Void
@@ -107,7 +107,7 @@ public final class ProcessTap {
         try verify(format)
 
         // 率はタップが決める。こちらの前提を押し付けない。
-        let pipeline = makePipeline(format.mSampleRate)
+        let pipeline = try makePipeline(format.mSampleRate)
 
         // **渡した率で組まれたことを確かめる。** 確かめないと、呼び出し側が引数を捨てて
         // 既定の48kHzで組んでも通ってしまう。そうなると44.1kHzの機械で約9%ずれた時系列が
