@@ -16,9 +16,23 @@ public enum AudioProcessList {
         case propertyFailed(selector: AudioObjectPropertySelector, status: OSStatus)
     }
 
+    /// 1回ぶんの読み取り結果。
+    public struct Snapshot {
+        public var processes: [AudioProcess]
+
+        /// 値を読めずに捨てたプロセスの数。
+        ///
+        /// **捨てた事実を落とさない。** 落とすと「1つも読めなかった」と「会議アプリが
+        /// 鳴っていない」が同じ空の一覧になる。ADR-0008 がいちばん避けたい混同を、
+        /// この層が作ることになる。判断は上でするので、ここでは数だけ持って返す。
+        public var unreadable: Int
+    }
+
     /// いま Core Audio が知っているプロセスすべて。会議アプリかどうかの選別はしない。
-    public static func current() throws -> [AudioProcess] {
-        try processObjectIDs().compactMap(describe)
+    public static func current() throws -> Snapshot {
+        let ids = try processObjectIDs()
+        let processes = ids.compactMap(describe)
+        return Snapshot(processes: processes, unreadable: ids.count - processes.count)
     }
 
     // MARK: - Core Audio からの読み出し
@@ -35,8 +49,12 @@ public enum AudioProcessList {
 
     /// システムオブジェクトが持つプロセスオブジェクトの一覧。
     ///
-    /// 個数は呼び出しのたびに変わるので、大きさを問い合わせてから確保する。
-    /// 固定長の配列を置くと、会議中にアプリが増えた瞬間に取りこぼす。
+    /// 大きさを問い合わせてから確保するが、**2回の呼び出しの間に増えたぶんは取りこぼす。**
+    /// `ioDataSize` は入口では確保した長さの上限として効くので、古い値を渡した2回目は
+    /// そこで頭打ちになる。取りこぼしたぶんは次の呼び出しで拾う。
+    ///
+    /// 減った場合は、返ってきた大きさまで詰め直す。詰めないと末尾に
+    /// `kAudioObjectUnknown` が残り、存在しないプロセスを読みにいくことになる。
     private static func processObjectIDs() throws -> [AudioObjectID] {
         let selector = kAudioHardwarePropertyProcessObjectList
         var propertyAddress = address(selector)
@@ -59,7 +77,7 @@ public enum AudioProcessList {
         guard status == noErr else {
             throw ListError.propertyFailed(selector: selector, status: status)
         }
-        return ids
+        return Array(ids.prefix(Int(dataSize) / MemoryLayout<AudioObjectID>.size))
     }
 
     /// 1プロセスぶんの値を読む。
@@ -70,7 +88,11 @@ public enum AudioProcessList {
         guard let pid = integer(of: object, kAudioProcessPropertyPID, as: pid_t.self) else {
             return nil
         }
-        let bundleId = string(of: object, kAudioProcessPropertyBundleID)
+        // 空文字は「取れなかった」と同じに倒す。倒さないと name のフォールバックで
+        // 「値がある」扱いになり、名前が空のまま記録に残る。
+        let rawBundleId = string(of: object, kAudioProcessPropertyBundleID)
+        let bundleId: String? = (rawBundleId?.isEmpty ?? true) ? nil : rawBundleId
+        // 読めなければ false に倒す。鳴っているか分からないものを録るより、録らないほうが安い。
         let isRunningOutput =
             integer(of: object, kAudioProcessPropertyIsRunningOutput, as: UInt32.self) ?? 0
 
@@ -95,7 +117,11 @@ public enum AudioProcessList {
         return status == noErr ? value : nil
     }
 
-    /// CFString を返すプロパティ。所有権が呼び出し側に移るので、Swift の String に写して手放す。
+    /// CFString を返すプロパティ。
+    ///
+    /// 返る参照は +1 で、解放する義務は呼び出し側にある。**`value` を nil で始めるのが要点で、**
+    /// 上書きで失われる参照が無いため、ARC がスコープ終端でその +1 をちょうど1回消費する。
+    /// 初期値を入れると、その参照が解放されないまま捨てられる。
     private static func string(
         of object: AudioObjectID, _ selector: AudioObjectPropertySelector
     ) -> String? {
