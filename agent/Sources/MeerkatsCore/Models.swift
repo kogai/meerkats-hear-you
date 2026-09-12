@@ -1,0 +1,66 @@
+import Foundation
+
+/// 20msフレーム1つから算出した値。生のPCMはここに入らない。
+/// 詳細層(ADR-0002)としてリングバッファに載るのもこの型であり、
+/// 「内容は復元できない」という要件は保持する値の種類そのもので担保される。
+public struct FrameMetrics: Equatable {
+    public let monotonicUs: Int64
+    public let dbfs: Double
+    public let clipRatio: Double
+    public let isSpeech: Bool
+
+    public init(monotonicUs: Int64, dbfs: Double, clipRatio: Double, isSpeech: Bool) {
+        self.monotonicUs = monotonicUs
+        self.dbfs = dbfs
+        self.clipRatio = clipRatio
+        self.isSpeech = isSpeech
+    }
+}
+
+/// 常時層(ADR-0002)の1秒ぶんの集約値。
+/// minDbfs を持つのは、1秒の中で生じた瞬間的な落ち込みが平均に埋もれないようにするため。
+public struct SecondRecord: Equatable {
+    public let monotonicUs: Int64
+    public let meanDbfs: Double
+    public let minDbfs: Double
+    public let maxDbfs: Double
+    public let speechRatio: Double
+    public let clipRatio: Double
+
+    public init(
+        monotonicUs: Int64,
+        meanDbfs: Double,
+        minDbfs: Double,
+        maxDbfs: Double,
+        speechRatio: Double,
+        clipRatio: Double
+    ) {
+        self.monotonicUs = monotonicUs
+        self.meanDbfs = meanDbfs
+        self.minDbfs = minDbfs
+        self.maxDbfs = maxDbfs
+        self.speechRatio = speechRatio
+        self.clipRatio = clipRatio
+    }
+}
+
+/// 詳細層として書き出す区間。frames は時刻順。
+public struct DetailWindow: Equatable {
+    public let startUs: Int64
+    public let trigger: String
+    public let frames: [FrameMetrics]
+
+    public init(startUs: Int64, trigger: String, frames: [FrameMetrics]) {
+        self.startUs = startUs
+        self.trigger = trigger
+        self.frames = frames
+    }
+}
+
+/// 観測しているストリームの種類。
+/// output は相手の声がこちらでどう鳴っているかで、検証は保留中(ADR-0006)。
+/// 受け皿だけ先に用意しておく。
+public enum StreamKind: String {
+    case mic
+    case output
+}

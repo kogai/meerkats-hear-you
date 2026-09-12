@@ -1,0 +1,39 @@
+name: agent
+
+# エージェント本体のビルドとテスト。
+#
+# 音声キャプチャは実機でしか動かせないため、MeerkatsCore には AVFoundation に依存しない
+# 純粋ロジックだけを置いている。ここで検証できるのはそのロジックと、SQLiteへの読み書き。
+# 実際のマイク入力を伴う部分は実機での確認が必要になる。
+
+on:
+  pull_request:
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'agent/**'
+      - '.github/workflows/agent.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: agent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ツールチェインの確認
+        run: swift --version
+
+      - name: ビルド
+        run: swift build -v
+
+      - name: テスト
+        run: swift test
