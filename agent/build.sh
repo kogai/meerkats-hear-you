@@ -42,6 +42,8 @@ cp "$BIN" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 # Xcodeが生成してくれる部分を自前で用意する。
 # LSUIElement: Dockアイコンを持たないメニューバー常駐にする (ADR-0005)
 # NSMicrophoneUsageDescription: これが無いとマイク要求の時点でプロセスが落ちる
+# NSAudioCaptureUsageDescription: プロセスタップ (ADR-0008) に要る。マイクとは別の鍵で、
+#   こちらが無いと受信音声のタップが張れない
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -65,6 +67,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>会話中の音声レベルを記録し、聞き取りづらさに気づけるようにします。音声の内容は記録しません。</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>会議アプリから聞こえる音声のレベルを記録し、相手が聞き取りづらいことに気づけるようにします。音声の内容は記録しません。</string>
 </dict>
 </plist>
 PLIST
