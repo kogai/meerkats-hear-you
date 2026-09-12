@@ -91,7 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
-    static let version = "0.1"
+    /// バンドルから読む。ここを固定値にすると、リリースのたびに記録へ嘘のバージョンが残る。
+    static let version =
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
 
     static func nowWallUs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1_000_000)
