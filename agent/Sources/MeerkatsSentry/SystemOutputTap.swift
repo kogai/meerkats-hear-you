@@ -2,18 +2,18 @@ import CoreAudio
 import Foundation
 import MeerkatsCore
 
-/// 1つの会議アプリの出力音声をタップして `RecordingPipeline` に流し込む(ADR-0008)。
+/// システムの出力音声をタップして `RecordingPipeline` に流し込む(ADR-0008、ADR-0013)。
 ///
 /// `AudioCapture` の受信側にあたる。**あちらと同じく、ロジックは持たない。**
-/// 判断はすべて `MeerkatsCore` 側にあり、ここは Core Audio の手続きを踏んでバッファを渡すだけ。
+/// ここは Core Audio の手続きを踏んでバッファを渡すだけ。
 ///
-/// **1プロセスにつき1つ作る。** 複数の会議アプリが鳴っているときに何本張るかは、
-/// このクラスの外の決定になる(ADR-0013で議論中)。ここを1本に固定すると、その決定が
-/// 変わったときに作り直すことになるので、単位を小さく取ってある。
-public final class ProcessTap {
+/// **プロセスで限定しない。** 突き合わせる対象は「人に聞こえた音」であって、会議アプリが
+/// 出していた音ではない。通知音で相手の声が聞き取れなかったなら、それは記録に残るべき
+/// 出来事である。限定して除くと、記録の上では「正常に聞こえていた」ことになる
+/// (ADR-0013)。
+public final class SystemOutputTap {
     public enum TapError: Error {
         case alreadyRunning
-        case processNotFound(pid: pid_t)
         case tapCreationFailed(OSStatus)
         case tapUIDUnavailable(OSStatus)
         case aggregateDeviceCreationFailed(OSStatus)
@@ -62,11 +62,11 @@ public final class ProcessTap {
         self.onError = onError
     }
 
-    /// 指定した pid のプロセスの出力をタップし始める。
+    /// システムの出力をタップし始める。
     ///
     /// 手順は3段。**タップを作り、それだけを載せた集約デバイスを作り、IOを回す。**
     /// タップ単体では音を取り出せず、デバイスに載せて初めて読める。
-    public func start(pid: pid_t) throws {
+    public func start() throws {
         // **2回目を黙って受け付けない。** 受け付けると、失敗したときの後始末が
         // 1回目の資源を壊し、成功したときは1回目が漏れたまま2本のIOが同じ経路を叩く。
         // 音が混ざるので、ADR-0008 が禁じたものがここから出てくる。
@@ -78,7 +78,7 @@ public final class ProcessTap {
         }
 
         do {
-            try beginTapping(pid: pid)
+            try beginTapping()
         } catch {
             // **途中で失敗したぶんを必ず戻す。** タップは作れたが集約デバイスで落ちた、
             // という形が普通に起きる。呼び出し側は start が投げたら stop を呼ばないので、
@@ -90,15 +90,19 @@ public final class ProcessTap {
         }
     }
 
-    private func beginTapping(pid: pid_t) throws {
-        let processObject = try processObject(for: pid)
-
-        // **モノのミックスダウンで取る。** 話者の分類はしないと決めてあるので(ADR-0012)、
-        // チャンネルを分けて取る意味が無い。ADR-0010 の水準では、どのみち帯域も分けない。
+    private func beginTapping() throws {
+        // **モノで、システム全体を取る。** 除外するプロセスは無い(ADR-0013)。
         //
-        // ステレオで取ると、インターリーブされた列をそのまま1本のサンプル列として読むことになり、
-        // 実質のサンプル率が倍になる。取り違えても音は出るので、気づくのが遅れる。
-        let description = CATapDescription(monoMixdownOfProcesses: [processObject])
+        // **自分自身も含まれる。** ヘッダに除外の記述が無く、自分を外したい実装は自分の
+        // プロセスを明示的に渡している。いまこのエージェントは音を出さないので害は無いが、
+        // **音を出すようになった瞬間に自分の音を録り始める。** 通知に音を付けるなら、
+        // ここに自分のプロセスを渡すこと。
+        //
+        // モノにするのは、話者の分類はしないと決めてあるため(ADR-0012)。ADR-0010 の水準では
+        // どのみち帯域も分けない。ステレオで取ると、インターリーブされた列をそのまま1本の
+        // サンプル列として読むことになり、実質のサンプル率が倍になる。取り違えても音は出るので、
+        // 気づくのが遅れる。
+        let description = CATapDescription(monoGlobalTapButExcludeProcesses: [])
         // 相手の音を消してしまうと会議にならない。読むだけで、出力はそのまま通す。
         description.isPrivate = true
         description.muteBehavior = .unmuted
@@ -149,7 +153,7 @@ public final class ProcessTap {
         let onError = self.onError
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcId, aggregateId, nil) {
             _, inputData, _, _, _ in
-            ProcessTap.handle(inputData, pipeline: pipeline, onError: onError)
+            SystemOutputTap.handle(inputData, pipeline: pipeline, onError: onError)
         }
         guard status == noErr, let ioProcId else { throw TapError.ioProcFailed(status) }
 
@@ -210,30 +214,6 @@ public final class ProcessTap {
     }
 
     // MARK: - Core Audio の手続き
-
-    /// pid からプロセスオブジェクトを引く。
-    ///
-    /// `AudioProcessList` が写し取る値に含めていないのは、`AudioObjectID` が Core Audio の
-    /// 型だからである。**判断側にこの型を持ち込まないために、必要になったここで引き直す。**
-    private func processObject(for pid: pid_t) throws -> AudioObjectID {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var input = pid
-        var object = AudioObjectID(kAudioObjectUnknown)
-        var dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
-
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address,
-            UInt32(MemoryLayout<pid_t>.size), &input, &dataSize, &object
-        )
-        guard status == noErr, object != AudioObjectID(kAudioObjectUnknown) else {
-            throw TapError.processNotFound(pid: pid)
-        }
-        return object
-    }
 
     private func tapUID() throws -> String {
         var address = AudioObjectPropertyAddress(

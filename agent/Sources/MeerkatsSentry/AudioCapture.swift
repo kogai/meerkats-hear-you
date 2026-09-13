@@ -23,7 +23,7 @@ public final class AudioCapture {
     ///
     /// **率を渡してから作らせるのが要点。** 入力デバイスの率はこちらから決められない。
     /// 48kHz 前提で組んだ経路を 44.1kHz の機械に当てると、**約9%ずれた時系列が黙って
-    /// 記録される。** 記録は残るので、値を見るまで気づかない。受信側(`ProcessTap`)と同じ形。
+    /// 記録される。** 記録は残るので、値を見るまで気づかない。受信側(`SystemOutputTap`)と同じ形。
     public typealias PipelineFactory = (_ sampleRate: Double) throws -> RecordingPipeline
 
     private let engine = AVAudioEngine()
@@ -76,7 +76,7 @@ public final class AudioCapture {
         let format = input.outputFormat(forBus: 0)
         // 実在する音声の率の範囲。下を切らないと1フレームのサンプル数が0に落ち、
         // 上を切らないと無限大が割り切れ判定を素通りして、整数に直すところで落ちる。
-        // 受信側(`ProcessTap`)の verify と同じ範囲にしてある。
+        // 受信側(`SystemOutputTap`)の verify と同じ範囲にしてある。
         guard format.channelCount > 0,
               format.sampleRate >= 8000, format.sampleRate <= 768_000
         else {
@@ -114,7 +114,7 @@ public final class AudioCapture {
         self.box = box
 
         // **タップの閉包に self を入れない。** 入れると、音のスレッドからの読みと
-        // メインスレッドからの書きが競合する。受信側(`ProcessTap`)と同じ形。
+        // メインスレッドからの書きが競合する。受信側(`SystemOutputTap`)と同じ形。
         //
         // 渡すのは経路そのものではなく入れ物である。経路を値で渡すと、`stop()` が
         // こちら側を手放しても閉包の参照が無傷のまま残り、締めたあとの経路に流し込める。
