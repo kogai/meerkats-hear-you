@@ -57,16 +57,20 @@ public enum StatusText {
         return lines
     }
 
-    /// 音が出ているかどうか。**異常ではないがストリームで意味が変わる**。
+    /// 音が立っているかどうか。**異常ではないがストリームで意味が変わる**。
     ///
-    /// 受信側は**このMacで鳴っている音すべて**であって、相手の声とは限らない(ADR-0013)。
-    /// 「相手が発話中」と書くと、音楽が鳴っているだけのときに嘘になる。
+    /// **この判定は絶対値ではない。** `SpeechDetector` は直近の背景に対してレベルが
+    /// 十分に上がったかを見る。マイク側では、それが自分の発話とほぼ一致する。
+    ///
+    /// **受信側では一致しない。** 鳴っているのはこのMacの音すべてで、相手の声とは限らない
+    /// (ADR-0013)。しかも定常的な音楽は背景そのものを押し上げるので、**鳴っていても
+    /// 立ってはいない。** 「音が鳴っている」と書くと、レベルの行と同じメニューの中で矛盾する。
     public static func speechText(isSpeaking: Bool, in stream: StreamKind) -> String {
         switch (stream, isSpeaking) {
         case (.mic, true): return "発話中"
         case (.mic, false): return "無音"
-        case (.output, true): return "音が鳴っている"
-        case (.output, false): return "無音"
+        case (.output, true): return "音が立っている"
+        case (.output, false): return "背景のまま"
         }
     }
 
@@ -84,7 +88,7 @@ public enum StatusText {
         case (.mic, .lowLevel): return "音が小さい(入力レベルが低すぎる)"
         case (.mic, .dropout): return "音が途切れている"
         case (.output, .clipping): return "聞こえている音が割れている"
-        case (.output, .lowLevel): return "聞こえが小さい(相手の声なら伝えるとよい)"
+        case (.output, .lowLevel): return "聞こえが小さい"
         case (.output, .dropout): return "聞こえている音が途切れている"
         }
     }

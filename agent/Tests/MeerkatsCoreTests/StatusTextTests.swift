@@ -89,14 +89,32 @@ final class StatusTextTests: XCTestCase {
         }
     }
 
-    /// 受信側の詳細は、異常の行だけでなく音の行も「聞こえ」の話になっていること。
-    /// **「発話中」のままだとこちらが話しているように読め、「相手が発話中」だと
-    /// 音楽が鳴っているだけのときに嘘になる**(ADR-0013)。
-    func testDetailForOutputStreamIsAboutWhatWasHeard() {
+    /// 受信側の音の行が、**検知器が実際に見ているもの**に合っていること。
+    ///
+    /// `SpeechDetector` は直近の背景に対する相対値を見る。定常的な音楽は背景を押し上げるので、
+    /// **鳴っていても立ってはいない。** 「音が鳴っている」と書くと、同じメニューに並ぶ
+    /// レベルの行と矛盾する。
+    func testOutputSpeechTextMatchesWhatTheDetectorMeasures() {
+        XCTAssertEqual(StatusText.speechText(isSpeaking: true, in: .output), "音が立っている")
+        XCTAssertEqual(StatusText.speechText(isSpeaking: false, in: .output), "背景のまま")
+
+        for isSpeaking in [true, false] {
+            let text = StatusText.speechText(isSpeaking: isSpeaking, in: .output)
+            XCTAssertFalse(text.contains("発話"), "マイク側の言い回しが残っている")
+            XCTAssertFalse(text.contains("相手"), "限定していた頃の言い回しが残っている")
+            XCTAssertNotEqual(
+                text, StatusText.speechText(isSpeaking: isSpeaking, in: .mic),
+                "マイク側と同じ文言になっている")
+        }
+    }
+
+    /// 詳細の並びにも、受信側の言い回しが入ること。
+    func testDetailForOutputStreamUsesTheOutputWording() {
         let lines = StatusText.detail(snapshot(mean: -25, speaking: true), in: .output)
-        XCTAssertTrue(lines.contains("音が鳴っている"))
-        XCTAssertFalse(lines.contains("発話中"), "マイク側の言い回しが残っている")
-        XCTAssertFalse(lines.contains("相手が発話中"), "限定していた頃の言い回しが残っている")
+        XCTAssertTrue(lines.contains(StatusText.speechText(isSpeaking: true, in: .output)))
+
+        let quiet = StatusText.detail(snapshot(mean: -25, speaking: false), in: .output)
+        XCTAssertTrue(quiet.contains(StatusText.speechText(isSpeaking: false, in: .output)))
     }
 
     /// マイク側と受信側で文言が違うこと。同じ異常でも利用者にとっての意味が変わるため、
@@ -116,6 +134,9 @@ final class StatusTextTests: XCTestCase {
     /// 限定をやめた(ADR-0013)ので、鳴っているのが相手の声とは限らない。音楽でも通知音でも
     /// 同じ判定が出る。「相手の音が割れている」と断言すると、音楽が割れているだけのときに嘘になる。
     /// 相手の声かどうかを言い当てられるのは、ADR-0012 の突合で相手の記録と並べたあと。
+    ///
+    /// **「相手」が一度も出ないことを見る。** 位置だけを見る書き方
+    /// (先頭に無ければよい) にすると、「聞こえている音が割れている(相手側の問題)」が通る。
     func testOutputWordingDoesNotBlameTheOtherParty() {
         for kind in [AnomalyKind.clipping, .lowLevel, .dropout] {
             let text = StatusText.description(of: kind, in: .output)
@@ -124,7 +145,7 @@ final class StatusTextTests: XCTestCase {
                 "\(kind) の受信側の文言が聞こえの話になっていない"
             )
             XCTAssertFalse(
-                text.hasPrefix("相手"),
+                text.contains("相手"),
                 "\(kind) の受信側の文言が相手を名指ししている"
             )
         }
