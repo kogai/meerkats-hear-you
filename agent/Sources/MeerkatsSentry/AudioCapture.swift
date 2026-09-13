@@ -141,12 +141,14 @@ public final class AudioCapture {
     }
 
     public func stop() {
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        // **締める前に断つ。** 断たずに締めると、在庫のバッファが締めたあとの経路に入り、
-        // `finish()` と `ingest` が同じ中身を同時に触る。
+        // **止めるより先に断つ。** 止めてから断つと、その間に届いたバッファが
+        // **生きた経路に入る。** 10秒の境界に当たれば、止めたあとに SQLite まで書きにいく。
+        // 代償は、止める直前のバッファ1つぶんが記録に入らないこと。**入るほうが間違いである。**
+        // 受信側(`SystemOutputTap`)と同じ形。
         let pipeline = box?.take()
         box = nil
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
         do {
             try pipeline?.finish()
         } catch {

@@ -80,15 +80,17 @@ public final class SystemOutputTap {
         do {
             try beginTapping()
         } catch {
+            // **作りかけの経路を先に断つ。** 残すと、一度も読んでいないものを
+            // stop() が締めにいける。**`take()` で断つ。** 参照を捨てるだけでは、
+            // IOの閉包が持っている入れ物は生きたままで、そこから経路へ流れ続ける。
+            // 順序は stop() と揃える。IOが回り始めていれば、畳むまでの間にバッファが届く。
+            _ = box?.take()
+            box = nil
+
             // **途中で失敗したぶんを必ず戻す。** タップは作れたが集約デバイスで落ちた、
             // という形が普通に起きる。呼び出し側は start が投げたら stop を呼ばないので、
             // ここで戻さないと Core Audio の側にタップが残り続ける。
             teardown()
-            // 作りかけの経路も断つ。残すと、一度も読んでいないものを stop() が締めにいける。
-            // **`take()` で断つ。** 参照を捨てるだけでは、IOの閉包が持っている入れ物は
-            // 生きたままで、そこから経路へ流れ続ける。
-            _ = box?.take()
-            box = nil
             throw error
         }
     }
@@ -171,11 +173,16 @@ public final class SystemOutputTap {
 
     /// 記録を締めて、タップを畳む。
     public func stop() {
-        teardown()
-        // **締める前に断つ。** 断たずに締めると、在庫のバッファが締めたあとの経路に入り、
-        // `finish()` と `ingest` が同じ中身を同時に触る。
+        // **畳むより先に断つ。** 畳んでから断つと、`AudioDeviceStop` と `take()` の
+        // 間に届いたバッファが**生きた経路に入る。** 10秒の境界に当たれば、
+        // 止めたあとに SQLite まで書きにいく。`PipelineBox` は「締めたあとに届いた
+        // バッファは記録の外の音」と決めているのに、そこだけ捨てられない窓になる。
+        //
+        // 代償は、止める直前のバッファ1つぶん(約100ms)が記録に入らないこと。
+        // **入るほうが間違いである。** 止めると決めたあとの音である。
         let pipeline = box?.take()
         box = nil
+        teardown()
         do {
             try pipeline?.finish()
         } catch {
@@ -189,19 +196,23 @@ public final class SystemOutputTap {
     /// そこで `finish()` まで走ると、1本も読んでいない記録を締めることになる。
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
-        // **在庫のバッファが撃ち止められることには、まだ半分寄りかかっている。**
+        // **在庫のバッファには、まだ寄りかかっている。**
         //
         // `AudioHardware.h` は `AudioDeviceStop` にも `AudioDeviceDestroyIOProcID` にも、
         // 呼んだあとコールバックが来ないとは書いていない。実務上はそう扱われているが、
         // それは慣行であって契約ではない。
         //
-        // **寄りかからなくなったのは締めとの競合だけである。** `stop()` はここを抜けたあと
-        // `PipelineBox.take()` で経路を断つ。断ちは錠の中で起きるので、在庫の `ingest` が
-        // 終わるまで返らない。`finish()` が `ingest` と同じ中身を触ることはなくなった。
-        // 断ったあとに届いたバッファは、入れ物が nil を見て黙って捨てる。
+        // **`PipelineBox` が消したのは、締めとの競合だけである。** `stop()` はここへ来る前に
+        // `take()` で経路を断つ。断ちは錠の中で起きるので、在庫の `ingest` が終わるまで
+        // 返らない。`finish()` が `ingest` と同じ中身を触ることはなくなった。
         //
-        // **`deinit` は断たない。** 断つ相手がいない——`stop()` を呼ばなかった側が
-        // ここへ来ているので、締める経路も残っていない。
+        // **残っているものが2つある。**
+        //
+        // - `AudioDeviceDestroyIOProcID` のあとに呼ばれた場合、閉包は死んだ `bufferList` を
+        //   読む。**入れ物では防げない。** 箱が守るのは経路の中身であって、引数として
+        //   渡されたポインタではない。
+        // - **`deinit` は断たない。** `stop()` を呼ばずにここへ来た場合、入れ物は生きた
+        //   経路を持ったままIOの閉包に残る。締める相手がいないだけで、経路は生きている。
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
@@ -323,6 +334,9 @@ public final class SystemOutputTap {
     ///
     /// なお `onError` は呼び出し側が書く閉包なので、**そこで自分を強く捕まえれば
     /// 同じ循環が外から作れる。** 呼び出し側で弱く持つこと。
+    ///
+    /// **入れ物の錠を音のスレッドで取ることになる。** 待つ相手は `take()` だけで、
+    /// あちらは参照を1つ入れ替えるだけなので待ち時間に上限がある(`PipelineBox` を参照)。
     private static func handle(
         _ bufferList: UnsafePointer<AudioBufferList>,
         box: PipelineBox,
