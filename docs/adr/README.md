@@ -25,4 +25,4 @@
 | [0011](0011-module-names-from-meerkat-ecology.md) | モジュールの名前をミーアキャットの生態から採る | Accepted |
 | [0012](0012-multiparty-meetings.md) | 多人数の会議に対応し、話者の分類はしない | Accepted |
 | [0013](0013-record-what-was-heard.md) | 受信音声は限定せず、人に聞こえた音をそのまま録る | Accepted |
-| [0014](0014-suspend-when-not-speaking.md) | 自分の発話が途切れたら記録を休止する | Proposed |
+| [0014](0014-suspend-when-not-speaking.md) | 自分の発話が途切れたら記録を休止する | Accepted |
