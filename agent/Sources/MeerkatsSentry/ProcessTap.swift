@@ -177,10 +177,13 @@ public final class ProcessTap {
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
         // **ここで在庫のバッファが撃ち止められることに寄りかかっている。**
-        // マイク側(`AudioCapture`)は `AVAudioEngine` に同じ約束が無いので、入れ物を挟んで
-        // 止める側から断てるようにしてある。こちらが挟まないのは、Core Audio が
-        // `AudioDeviceStop` と `AudioDeviceDestroyIOProcID` で明文の保証を置いているため。
-        // **寄りかかっていること自体は、書いておかないと次に読む人に見えない。**
+        //
+        // **明文の保証は無い。** `AudioHardware.h` は `AudioDeviceStop` にも
+        // `AudioDeviceDestroyIOProcID` にも、呼んだあとコールバックが来ないとは書いていない。
+        // 実務上はそう扱われているが、それは慣行であって契約ではない。
+        //
+        // マイク側(`AudioCapture`)が `PipelineBox` を挟んでいるのに、こちらが挟んでいないのは
+        // **理由があってではなく、まだ手が回っていないためである。** 揃えるなら挟む側に揃える。
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
