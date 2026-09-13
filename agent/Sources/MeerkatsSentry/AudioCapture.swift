@@ -16,7 +16,7 @@ import MeerkatsCore
 /// 書いている。**直すなら両方まとめてで、その話はここではない。**
 private final class PipelineBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var box: PipelineBox?
+    private var pipeline: RecordingPipeline?
 
     init(_ pipeline: RecordingPipeline) {
         self.pipeline = pipeline
