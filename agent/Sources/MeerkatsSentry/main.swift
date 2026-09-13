@@ -13,10 +13,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var analysis: AnalysisWindowController?
     private let liveState = LiveState()
 
+    /// 受信音声。**休止と再開で張り直すので、保持だけしておく。**
+    private var outputTap: SystemOutputTap?
+    /// 受信側の常時表示の状態。**まだ誰も読まない。** 表示に出すのは別の作業になる。
+    private let outputLiveState = LiveState()
+
     /// 記録の設定。**ストリーム種別を決めている唯一の場所にする。**
     /// 表示は記録より先に立ち上がるので、ここに置かないとメニューバーだけ別の値を持つ。
     /// 受信音声を足すときに、文言だけ取り残されるのがその形になる。
     private let configuration = RecordingPipeline.Configuration()
+
+    /// 受信側の設定。刻みと率の扱いはマイク側と同じで、ストリーム種別だけ違う。
+    private var outputConfiguration: RecordingPipeline.Configuration {
+        var configuration = self.configuration
+        configuration.streamKind = .output
+        return configuration
+    }
 
     private var sessionId: Int64 = 0
     private var streamId: Int64 = 0
@@ -38,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // 締めてから閉じる。端数の1秒と溜まっている常時層はここでしか書かれない。
         capture?.stop()
+        stopOutputTap()
         if sessionId != 0 {
             try? store?.endSession(id: sessionId, wallUs: Self.nowWallUs())
         }
@@ -71,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let currentSessionId = self.sessionId
             let liveState = self.liveState
             var startedStreamId: Int64 = 0
+            var gatedSink: GatedSink?
 
             let capture = AudioCapture(
                 frameMs: configuration.frameMs,
@@ -87,9 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     startedStreamId = streamId
 
-                    let sink = StoreSink(
+                    // **休止の判定を挟む。** 自分の発話が10分途切れたら、会議中ではないと
+                    // みなして記録を止める(ADR-0014)。判定はマイク側のレコードだけで決まる。
+                    let sink = GatedSink(wrapping: StoreSink(
                         store: store, streamId: streamId, sessionId: currentSessionId
-                    )
+                    ))
+                    // **ここで self に触らない。** 触ると工場の閉包が self を強く持ち、
+                    // AppDelegate → AudioCapture → 工場 → self で輪になる。
+                    // 遷移の受け取りは start のあとに繋ぐ。
+                    gatedSink = sink
+
                     let pipeline = RecordingPipeline(
                         configuration: configuration, sink: sink, liveState: liveState
                     )
@@ -105,6 +126,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.capture = capture
             self.streamId = startedStreamId
 
+            // **休止と再開の受け取りをここで繋ぐ。** 工場の中で繋ぐと輪になる。
+            // 呼ばれるのは音声のスレッドなので、主スレッドに渡してから触る。
+            gatedSink?.onTransition = { [weak self] transition in
+                DispatchQueue.main.async { self?.apply(transition) }
+            }
+
+            // 起動直後は記録している(ADR-0014)。会議の途中で立ち上げることがある。
+            startOutputTap()
+
             // 記録が始まってから開けるようにする。ストリームIDが決まる前に開くと、
             // 空のウインドウが出て「記録されていない」と誤解させる。
             analysis = AnalysisWindowController(
@@ -117,6 +147,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             report("記録を開始できませんでした: \(error)")
         }
+    }
+
+    // MARK: - 受信音声の張り直し(ADR-0014)
+
+    /// 休止と再開を受けて、受信音声のタップを畳む・張り直す。**主スレッドで呼ぶこと。**
+    private func apply(_ transition: RecordingGate.Transition) {
+        switch transition {
+        case .suspended: stopOutputTap()
+        case .resumed: startOutputTap()
+        }
+    }
+
+    /// **張り直すたびに新しいストリームを作る。** 続きとして繋がない。
+    ///
+    /// タップは実際に畳まれるので、その間の音は録れていない。1本のストリームに繋ぐと、
+    /// **録れていない区間が無音として残る。** 要望書の「記録上は正常」と同じ形になる。
+    /// 別のストリームにしておけば、録っていた区間が記録の側から分かる。
+    private func startOutputTap() {
+        guard outputTap == nil, let store, sessionId != 0 else { return }
+
+        let configuration = outputConfiguration
+        let currentSessionId = sessionId
+        let liveState = outputLiveState
+
+        let tap = SystemOutputTap(
+            frameMs: configuration.frameMs,
+            makePipeline: { sampleRate in
+                var configuration = configuration
+                configuration.sampleRate = sampleRate
+
+                let streamId = try store.addStream(
+                    sessionId: currentSessionId,
+                    kind: configuration.streamKind,
+                    deviceName: "システム出力",
+                    sampleRate: Int(sampleRate),
+                    frameMs: configuration.frameMs
+                )
+                let sink = StoreSink(
+                    store: store, streamId: streamId, sessionId: currentSessionId
+                )
+                // **こちらに休止の判定は挟まない。** 休止中はタップごと畳むので、
+                // レコードが流れてこない。挟むと、マイク側のレコードで決まる判定を
+                // 受信側のレコードでも動かすことになる。
+                let pipeline = RecordingPipeline(
+                    configuration: configuration, sink: sink, liveState: liveState
+                )
+                pipeline.onAnomaly = {
+                    AnomalyNotifier.notify($0, in: configuration.streamKind)
+                }
+                return pipeline
+            },
+            onError: { [weak self] error in
+                DispatchQueue.main.async { self?.report("\(error)") }
+            }
+        )
+
+        do {
+            try tap.start()
+            outputTap = tap
+        } catch {
+            // **受信音声が録れなくてもマイク側は続ける。** 片側だけでも振り返りは成立する。
+            report("受信音声を取得できませんでした: \(error)")
+        }
+    }
+
+    private func stopOutputTap() {
+        outputTap?.stop()
+        outputTap = nil
     }
 
     private func report(_ message: String) {
