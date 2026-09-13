@@ -89,15 +89,14 @@ final class StatusTextTests: XCTestCase {
         }
     }
 
-    /// 受信側の詳細は、異常の行だけでなく発話の行も相手の話になっていること。
-    /// ここが「発話中」のままだと、こちらが話しているように読める。
-    func testDetailForOutputStreamIsAboutTheOtherParty() {
+    /// 受信側の詳細は、異常の行だけでなく音の行も「聞こえ」の話になっていること。
+    /// **「発話中」のままだとこちらが話しているように読め、「相手が発話中」だと
+    /// 音楽が鳴っているだけのときに嘘になる**(ADR-0013)。
+    func testDetailForOutputStreamIsAboutWhatWasHeard() {
         let lines = StatusText.detail(snapshot(mean: -25, speaking: true), in: .output)
-        XCTAssertTrue(lines.contains("相手が発話中"))
+        XCTAssertTrue(lines.contains("音が鳴っている"))
         XCTAssertFalse(lines.contains("発話中"), "マイク側の言い回しが残っている")
-
-        let silent = StatusText.detail(snapshot(mean: -25, speaking: false), in: .output)
-        XCTAssertTrue(silent.contains("相手は無音"))
+        XCTAssertFalse(lines.contains("相手が発話中"), "限定していた頃の言い回しが残っている")
     }
 
     /// マイク側と受信側で文言が違うこと。同じ異常でも利用者にとっての意味が変わるため、
@@ -112,12 +111,21 @@ final class StatusTextTests: XCTestCase {
         }
     }
 
-    /// 受信側の文言は「相手」の話であること。こちらの入力レベルの話にしない。
-    func testOutputWordingIsAboutTheOtherParty() {
+    /// **受信側の文言は原因を名指ししないこと。**
+    ///
+    /// 限定をやめた(ADR-0013)ので、鳴っているのが相手の声とは限らない。音楽でも通知音でも
+    /// 同じ判定が出る。「相手の音が割れている」と断言すると、音楽が割れているだけのときに嘘になる。
+    /// 相手の声かどうかを言い当てられるのは、ADR-0012 の突合で相手の記録と並べたあと。
+    func testOutputWordingDoesNotBlameTheOtherParty() {
         for kind in [AnomalyKind.clipping, .lowLevel, .dropout] {
+            let text = StatusText.description(of: kind, in: .output)
             XCTAssertTrue(
-                StatusText.description(of: kind, in: .output).contains("相手"),
-                "\(kind) の受信側の文言が相手の話になっていない"
+                text.contains("聞こえ"),
+                "\(kind) の受信側の文言が聞こえの話になっていない"
+            )
+            XCTAssertFalse(
+                text.hasPrefix("相手"),
+                "\(kind) の受信側の文言が相手を名指ししている"
             )
         }
     }

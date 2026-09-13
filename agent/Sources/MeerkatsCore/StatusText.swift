@@ -57,28 +57,35 @@ public enum StatusText {
         return lines
     }
 
-    /// 発話の有無。ADR-0008の対応表の3行目で、**異常ではないがストリームで意味が変わる**。
-    /// 受信側の「発話中」は相手が話していることで、こちらが話していることではない。
+    /// 音が出ているかどうか。**異常ではないがストリームで意味が変わる**。
+    ///
+    /// 受信側は**このMacで鳴っている音すべて**であって、相手の声とは限らない(ADR-0013)。
+    /// 「相手が発話中」と書くと、音楽が鳴っているだけのときに嘘になる。
     public static func speechText(isSpeaking: Bool, in stream: StreamKind) -> String {
         switch (stream, isSpeaking) {
         case (.mic, true): return "発話中"
         case (.mic, false): return "無音"
-        case (.output, true): return "相手が発話中"
-        case (.output, false): return "相手は無音"
+        case (.output, true): return "音が鳴っている"
+        case (.output, false): return "無音"
         }
     }
 
     /// 同じ異常でも、どちらのストリームで起きたかで**利用者にとっての意味が変わる**(ADR-0008)。
-    /// マイク側は自分で直せる話、受信側は相手に伝えるか、こちらでは手が無いかになる。
     /// 一方の文言をもう一方に流用すると、**通知が嘘になる。**
+    ///
+    /// マイク側は自分の入力の話で、自分で直せる。
+    ///
+    /// **受信側は「聞こえ」の話である。** 限定をやめた(ADR-0013)ので、鳴っているのが
+    /// 相手の声とは限らない。音楽でも通知音でも同じ判定が出る。**原因を名指ししない。**
+    /// 相手の声かどうかを言い当てられるのは、ADR-0012 の突合で相手の記録と並べたあとになる。
     public static func description(of anomaly: AnomalyKind, in stream: StreamKind) -> String {
         switch (stream, anomaly) {
         case (.mic, .clipping): return "音が割れている(入力レベルが高すぎる)"
         case (.mic, .lowLevel): return "音が小さい(入力レベルが低すぎる)"
         case (.mic, .dropout): return "音が途切れている"
-        case (.output, .clipping): return "相手の音が割れている(相手側の問題)"
-        case (.output, .lowLevel): return "相手の声が小さい(相手に伝えるとよい)"
-        case (.output, .dropout): return "相手の音が途切れている"
+        case (.output, .clipping): return "聞こえている音が割れている"
+        case (.output, .lowLevel): return "聞こえが小さい(相手の声なら伝えるとよい)"
+        case (.output, .dropout): return "聞こえている音が途切れている"
         }
     }
 
