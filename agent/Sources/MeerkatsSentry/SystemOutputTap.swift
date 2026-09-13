@@ -24,8 +24,10 @@ public final class SystemOutputTap {
             formatId: AudioFormatID, flags: AudioFormatFlags,
             channels: UInt32, bitsPerChannel: UInt32, sampleRate: Double
         )
-        /// 記録の経路が、渡した率で組まれていなかった。
-        case pipelineRateMismatch(tap: Double, pipeline: Double)
+        /// 記録の経路が、渡した率か刻みで組まれていなかった。
+        case pipelineRateMismatch(
+            tap: Double, pipeline: Double, frameMs: Int, pipelineFrameMs: Int
+        )
         /// 率がフレームの刻みで割り切れず、1フレームごとに端数が出る。
         case rateNotDivisibleIntoFrames(sampleRate: Double, frameMs: Int)
         case ioProcFailed(OSStatus)
@@ -36,8 +38,9 @@ public final class SystemOutputTap {
     /// **率を渡してから作らせるのが要点。** タップの率は出力デバイスの既定に従うので、
     /// こちらから決められない。48kHz 前提で組んだ経路を後から当てると、44.1kHz の機械では
     /// 毎回弾かれるか、弾かなければ約9%ずれた時系列が黙って記録される。
-    public typealias PipelineFactory = (_ sampleRate: Double) -> RecordingPipeline
+    public typealias PipelineFactory = (_ sampleRate: Double) throws -> RecordingPipeline
 
+    private let frameMs: Int
     private let makePipeline: PipelineFactory
     private let onError: (Error) -> Void
 
@@ -46,9 +49,15 @@ public final class SystemOutputTap {
     private var aggregateId = AudioObjectID(kAudioObjectUnknown)
     private var ioProcId: AudioDeviceIOProcID?
 
+    /// - Parameter frameMs: 工場が作る経路のフレームの刻み。
+    ///   **工場を呼ぶ前に率が使えるかを決めるために要る。** 工場は記録にストリームの行を
+    ///   書くので、呼んでから弾くと、一度も読んでいないストリームが記録に残る。
     public init(
-        makePipeline: @escaping PipelineFactory, onError: @escaping (Error) -> Void
+        frameMs: Int,
+        makePipeline: @escaping PipelineFactory,
+        onError: @escaping (Error) -> Void
     ) {
+        self.frameMs = frameMs
         self.makePipeline = makePipeline
         self.onError = onError
     }
@@ -110,28 +119,32 @@ public final class SystemOutputTap {
         let format = try tapFormat()
         try verify(format)
 
+        // **工場を呼ぶ前に率が使えるかを決める。** 工場は記録にストリームの行を書くので、
+        // 呼んでから弾くと、一度も読んでいないストリームが記録に残る。
+        let exactFrameLength = format.mSampleRate * Double(frameMs) / 1000.0
+        guard exactFrameLength == exactFrameLength.rounded(.down) else {
+            throw TapError.rateNotDivisibleIntoFrames(
+                sampleRate: format.mSampleRate, frameMs: frameMs
+            )
+        }
+
         // 率はタップが決める。こちらの前提を押し付けない。
-        let pipeline = makePipeline(format.mSampleRate)
+        let pipeline = try makePipeline(format.mSampleRate)
 
         // **渡した率で組まれたことを確かめる。** 確かめないと、呼び出し側が引数を捨てて
         // 既定の48kHzで組んでも通ってしまう。そうなると44.1kHzの機械で約9%ずれた時系列が
         // 黙って記録される。**「毎回落ちる」を「静かにずれる」に振り替えただけになる。**
-        guard pipeline.configuration.sampleRate == format.mSampleRate else {
+        // ここで弾くのは呼び出し側の誤りなので、ストリームの行が残ってよい。
+        // 残ったほうが原因が追える。
+        guard pipeline.configuration.sampleRate == format.mSampleRate,
+              pipeline.configuration.frameMs == frameMs
+        else {
             throw TapError.pipelineRateMismatch(
-                tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate
+                tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate,
+                frameMs: frameMs, pipelineFrameMs: pipeline.configuration.frameMs
             )
         }
 
-        // **刻みで割り切れることも確かめる。** 1フレームのサンプル数は切り捨てで整数になるので、
-        // 割り切れない率だと1フレームごとに端数を捨てる。捨てた量は溜まり、恒常的なずれになる。
-        // 率が合っていることだけ確かめて満足すると、同じ「静かにずれる」を別の入口から通す。
-        let exactFrameLength =
-            format.mSampleRate * Double(pipeline.configuration.frameMs) / 1000.0
-        guard Double(pipeline.configuration.frameLength) == exactFrameLength else {
-            throw TapError.rateNotDivisibleIntoFrames(
-                sampleRate: format.mSampleRate, frameMs: pipeline.configuration.frameMs
-            )
-        }
         self.pipeline = pipeline
 
         // **IOの閉包に self を入れない。** 入れると、最後の強参照がIOスレッドの中で
@@ -167,6 +180,14 @@ public final class SystemOutputTap {
     /// そこで `finish()` まで走ると、1本も読んでいない記録を締めることになる。
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
+        // **ここで在庫のバッファが撃ち止められることに寄りかかっている。**
+        //
+        // **明文の保証は無い。** `AudioHardware.h` は `AudioDeviceStop` にも
+        // `AudioDeviceDestroyIOProcID` にも、呼んだあとコールバックが来ないとは書いていない。
+        // 実務上はそう扱われているが、それは慣行であって契約ではない。
+        //
+        // マイク側(`AudioCapture`)が `PipelineBox` を挟んでいるのに、こちらが挟んでいないのは
+        // **理由があってではなく、まだ手が回っていないためである。** 揃えるなら挟む側に揃える。
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)

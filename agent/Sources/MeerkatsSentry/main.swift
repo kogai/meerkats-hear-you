@@ -64,26 +64,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionId = try store.startSession(
                 wallUs: Self.nowWallUs(), agentVersion: Self.version
             )
-            streamId = try store.addStream(
-                sessionId: sessionId,
-                kind: configuration.streamKind,
-                deviceName: AudioCapture.currentInputDeviceName(),
-                sampleRate: Int(configuration.sampleRate),
-                frameMs: configuration.frameMs
-            )
 
-            let sink = StoreSink(store: store, streamId: streamId, sessionId: sessionId)
-            let pipeline = RecordingPipeline(
-                configuration: configuration, sink: sink, liveState: liveState
-            )
-            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: configuration.streamKind) }
+            // **率が分かるまでストリームを作らない。** 入力デバイスの率はこちらから決められず、
+            // 48kHz と決め打って記録すると、44.1kHz の機械では嘘の値が残る。記録に残す率と、
+            // 実際に切り出す率が食い違えば、あとから見ても直しようがない。
+            let currentSessionId = self.sessionId
+            let liveState = self.liveState
+            var startedStreamId: Int64 = 0
 
             let capture = AudioCapture(
-                pipeline: pipeline,
+                frameMs: configuration.frameMs,
+                makePipeline: { sampleRate in
+                    var configuration = configuration
+                    configuration.sampleRate = sampleRate
+
+                    let streamId = try store.addStream(
+                        sessionId: currentSessionId,
+                        kind: configuration.streamKind,
+                        deviceName: AudioCapture.currentInputDeviceName(),
+                        sampleRate: Int(sampleRate),
+                        frameMs: configuration.frameMs
+                    )
+                    startedStreamId = streamId
+
+                    let sink = StoreSink(
+                        store: store, streamId: streamId, sessionId: currentSessionId
+                    )
+                    let pipeline = RecordingPipeline(
+                        configuration: configuration, sink: sink, liveState: liveState
+                    )
+                    pipeline.onAnomaly = {
+                        AnomalyNotifier.notify($0, in: configuration.streamKind)
+                    }
+                    return pipeline
+                },
                 onError: { [weak self] error in self?.report("\(error)") }
             )
+            // 工場は start の中で同期に呼ばれる。戻ったときには streamId が決まっている。
             try capture.start()
             self.capture = capture
+            self.streamId = startedStreamId
 
             // 記録が始まってから開けるようにする。ストリームIDが決まる前に開くと、
             // 空のウインドウが出て「記録されていない」と誤解させる。
