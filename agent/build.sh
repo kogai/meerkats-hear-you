@@ -41,9 +41,22 @@ cp "$BIN" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # Xcodeが生成してくれる部分を自前で用意する。
 # LSUIElement: Dockアイコンを持たないメニューバー常駐にする (ADR-0005)
-# NSMicrophoneUsageDescription: これが無いとマイク要求の時点でプロセスが落ちる
+# NSMicrophoneUsageDescription: これが無いとマイク要求の時点でプロセスが落ちる。
+#   「会話中の」と書いていたが、実装は起動から終了までマイクを回し続けている。嘘だった。
+#   受信側だけ「常時」と正直に書くと、落差でマイク側は会議中だけだと読まれる。両方揃える。
+#
+#   **「自分の声が相手に届きにくいこと」とは書かない。** マイクのレベルから分かるのは
+#   入力が小さいことまでで、相手に届いたかどうかは分からない (ADR-0008 の冒頭)。
+#   分かるのは原因の候補であって、結果ではない
 # NSAudioCaptureUsageDescription: プロセスタップ (ADR-0008) に要る。マイクとは別の鍵で、
-#   こちらが無いと受信音声のタップが張れない
+#   こちらが無いと受信音声のタップが張れない。
+#   文面は「会議アプリの音」ではなく「このMacで鳴っている音」と書く。プロセスで限定しない
+#   (ADR-0013) ので、会議アプリに限ると書くと嘘になる。
+#   「何を」だけでなく「いつ」も書く。書かないと、会議中だけだと読まれる。
+#
+#   **目的は書いてよい。** 「相手の声が聞き取りづらいことに気づけるように」は何のために
+#   録るかの話で、ある瞬間に鳴っているのが相手の声だという主張ではない。表示の文言から
+#   「相手」を外した (原因を名指しできないため) のとは、別の話になる
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -66,9 +79,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>会話中の音声レベルを記録し、聞き取りづらさに気づけるようにします。音声の内容は記録しません。</string>
+	<string>マイクが拾う音のレベルを、会議中かどうかによらず常時記録し、入力が小さすぎるなど相手に届きにくくなる原因に気づけるようにします。音声の内容は記録しません。</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>会議アプリから聞こえる音声のレベルを記録し、相手が聞き取りづらいことに気づけるようにします。音声の内容は記録しません。</string>
+	<string>このMacで鳴っている音のレベルを、会議中かどうかによらず常時記録し、相手の声が聞き取りづらいことに気づけるようにします。音声の内容は記録しません。</string>
 </dict>
 </plist>
 PLIST
