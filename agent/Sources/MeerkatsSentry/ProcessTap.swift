@@ -24,8 +24,10 @@ public final class ProcessTap {
             formatId: AudioFormatID, flags: AudioFormatFlags,
             channels: UInt32, bitsPerChannel: UInt32, sampleRate: Double
         )
-        /// 記録の経路が、渡した率で組まれていなかった。
-        case pipelineRateMismatch(tap: Double, pipeline: Double)
+        /// 記録の経路が、渡した率か刻みで組まれていなかった。
+        case pipelineRateMismatch(
+            tap: Double, pipeline: Double, frameMs: Int, pipelineFrameMs: Int
+        )
         /// 率がフレームの刻みで割り切れず、1フレームごとに端数が出る。
         case rateNotDivisibleIntoFrames(sampleRate: Double, frameMs: Int)
         case ioProcFailed(OSStatus)
@@ -134,7 +136,8 @@ public final class ProcessTap {
               pipeline.configuration.frameMs == frameMs
         else {
             throw TapError.pipelineRateMismatch(
-                tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate
+                tap: format.mSampleRate, pipeline: pipeline.configuration.sampleRate,
+                frameMs: frameMs, pipelineFrameMs: pipeline.configuration.frameMs
             )
         }
 
@@ -173,6 +176,11 @@ public final class ProcessTap {
     /// そこで `finish()` まで走ると、1本も読んでいない記録を締めることになる。
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
+        // **ここで在庫のバッファが撃ち止められることに寄りかかっている。**
+        // マイク側(`AudioCapture`)は `AVAudioEngine` に同じ約束が無いので、入れ物を挟んで
+        // 止める側から断てるようにしてある。こちらが挟まないのは、Core Audio が
+        // `AudioDeviceStop` と `AudioDeviceDestroyIOProcID` で明文の保証を置いているため。
+        // **寄りかかっていること自体は、書いておかないと次に読む人に見えない。**
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
