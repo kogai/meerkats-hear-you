@@ -44,6 +44,7 @@ public final class RecordingPipeline {
         func write(seconds: [SecondRecord]) throws
         func write(detail: DetailWindow) throws
         func write(anchor: ClockAnchor) throws
+        func write(gap: RecordingGap) throws
     }
 
     public let configuration: Configuration
@@ -51,6 +52,11 @@ public final class RecordingPipeline {
     /// 記録が静かに落ちる。パイプラインを指し返す出力先は無いので、循環はしない。
     private let sink: Sink
     private let liveState: LiveState
+
+    /// **セッションで1つの時計を共有する**(ADR-0015 決定6)。既定値を置かないのは、
+    /// 置くとパイプラインごとに別の時計が生まれ、2本のストリームが別の原点を持つためである。
+    /// それは ADR-0015 が直そうとしている状態そのものになる。
+    private let clock: MonotonicClock
 
     private var framer: Framer
     private var detector: SpeechDetector
@@ -60,7 +66,12 @@ public final class RecordingPipeline {
     private var anchors: AnchorScheduler
 
     private var pendingSeconds: [SecondRecord] = []
+
+    /// 時刻は `baseUs + frameIndex * frameDurationUs`(ADR-0015 決定1)。
+    /// キャプチャが続いている間はフレーム数だけで決まるので、バッファの到着ジッタが入らない。
+    private var baseUs: Int64 = 0
     private var frameIndex: Int64 = 0
+    private var started = false
 
     /// 異常に入った瞬間に呼ばれる。通知の送出に使う(ADR-0005)。
     public var onAnomaly: ((AnomalyKind) -> Void)?
@@ -68,11 +79,13 @@ public final class RecordingPipeline {
     public init(
         configuration: Configuration = Configuration(),
         sink: Sink,
-        liveState: LiveState
+        liveState: LiveState,
+        clock: MonotonicClock
     ) {
         self.configuration = configuration
         self.sink = sink
         self.liveState = liveState
+        self.clock = clock
 
         framer = Framer(frameLength: configuration.frameLength)
         detector = SpeechDetector()
@@ -89,15 +102,34 @@ public final class RecordingPipeline {
     /// - Parameters:
     ///   - wallUs: いまの実時刻。アンカーを打つのに使う。
     public func ingest(_ samples: [Float], wallUs: Int64) throws {
+        if !started { try beginCapture() }
         for frame in framer.push(samples) {
             try process(frame: frame, wallUs: wallUs)
         }
     }
 
+    /// 最初のバッファで基準を決める。
+    ///
+    /// **0 に揃えない。** セッションの開始からキャプチャが実際に始まるまでの時間
+    /// (エンジンの起動、タップの確立、許可の応答)はストリームごとに違う。
+    /// 揃えると、実際にはずれて始まった2本を「同時に始まった」と記録することになる。
+    ///
+    /// そこまでの区間は**測れていなかった区間**なので、空隙として残す(ADR-0015 決定7)。
+    /// 残さないと、記録は「その間は静かだった」と読める。
+    private func beginCapture() throws {
+        let base = clock.nowUs()
+        // **先に残す。書けなければ基準を動かさない。** 先に動かすと、書き込みが投げた
+        // ときに時系列だけ飛んで空隙の行が無い記録になり、なぜ時刻が飛んでいるのかを
+        // 知る手がかりがどこにも残らない。投げたままなら、次のバッファでもう一度試せる。
+        try sink.write(gap: RecordingGap(startUs: 0, endUs: base, reason: .start))
+        baseUs = base
+        started = true
+    }
+
     private func process(frame: [Float], wallUs: Int64) throws {
-        // 時刻はフレーム番号から決める。処理時刻を読むと、1バッファぶんのフレームが
-        // ほぼ同じ時刻になってしまい、レベルの時系列として使えない。
-        let monotonicUs = frameIndex * configuration.frameDurationUs
+        // 時刻は基準からのフレーム番号で決める。ここで時計を読むと、1バッファぶんの
+        // フレームがほぼ同じ時刻になってしまい、レベルの時系列として使えない。
+        let monotonicUs = baseUs + frameIndex * configuration.frameDurationUs
         frameIndex += 1
 
         let dbfs = Levels.rmsDbfs(frame)

@@ -6,6 +6,7 @@ private final class CollectingSink: RecordingPipeline.Sink {
     var seconds: [SecondRecord] = []
     var details: [DetailWindow] = []
     var anchors: [ClockAnchor] = []
+    var gaps: [RecordingGap] = []
     /// 1回の write(seconds:) で渡された件数。まとめ書きの区切りを確かめるのに使う。
     var batchSizes: [Int] = []
 
@@ -16,11 +17,15 @@ private final class CollectingSink: RecordingPipeline.Sink {
 
     func write(detail: DetailWindow) throws { details.append(detail) }
     func write(anchor: ClockAnchor) throws { anchors.append(anchor) }
+    func write(gap: RecordingGap) throws { gaps.append(gap) }
 }
 
 final class RecordingPipelineTests: XCTestCase {
     private let sampleRate = 48_000.0
     private let frameMs = 20
+
+    /// `makePipeline` が差し込む時計。テストから進められるように持っておく。
+    private var clock = FakeClock()
 
     private func makePipeline(
         _ configure: (inout RecordingPipeline.Configuration) -> Void = { _ in }
@@ -31,8 +36,11 @@ final class RecordingPipelineTests: XCTestCase {
         configure(&configuration)
         let sink = CollectingSink()
         let state = LiveState()
+        clock = FakeClock()
         return (
-            RecordingPipeline(configuration: configuration, sink: sink, liveState: state),
+            RecordingPipeline(
+                configuration: configuration, sink: sink, liveState: state, clock: clock
+            ),
             sink, state
         )
     }
@@ -120,7 +128,9 @@ final class RecordingPipelineTests: XCTestCase {
         do {
             let sink = CollectingSink()
             observed = sink
-            pipeline = RecordingPipeline(sink: sink, liveState: LiveState())
+            pipeline = RecordingPipeline(
+                sink: sink, liveState: LiveState(), clock: FakeClock()
+            )
         }
 
         try pipeline.ingest(samples(seconds: 1, amplitude: 0.1), wallUs: 0)
@@ -183,5 +193,41 @@ final class RecordingPipelineTests: XCTestCase {
 
         XCTAssertTrue(notified.isEmpty)
         XCTAssertTrue(sink.details.isEmpty)
+    }
+
+    // MARK: - 基準点(ADR-0015 決定1)
+
+    /// 最初のバッファで基準を決める。**0 に揃えない。**
+    ///
+    /// セッションの開始からキャプチャが始まるまでの時間はストリームごとに違うので、
+    /// 揃えると、ずれて始まった2本を「同時に始まった」と記録することになる。
+    /// そこまでの区間は測れていなかった区間なので、空隙として残す。
+    func testFirstBufferSetsTheBaseFromTheClock() throws {
+        let (pipeline, sink, _) = makePipeline()
+        clock.us = 300_000
+
+        try pipeline.ingest(samples(seconds: 1, amplitude: 0.5), wallUs: 0)
+        try pipeline.finish()
+
+        XCTAssertEqual(sink.gaps.count, 1)
+        XCTAssertEqual(sink.gaps.first?.reason, .start)
+        XCTAssertEqual(sink.gaps.first?.startUs, 0)
+        XCTAssertEqual(sink.gaps.first?.endUs, 300_000)
+        XCTAssertEqual(sink.seconds.first?.monotonicUs, 300_000)
+    }
+
+    /// 基準が決まったあとは、フレーム数だけで刻む。
+    /// **時計はもう読まない。** 読むと、バッファの到着ジッタが時系列に入る。
+    func testTimestampsFollowFrameCountNotTheClock() throws {
+        let (pipeline, sink, _) = makePipeline()
+
+        try pipeline.ingest(samples(seconds: 1, amplitude: 0.5), wallUs: 0)
+        // 時計が飛んでも、刻みは変わらない。
+        clock.us = 99_000_000
+        try pipeline.ingest(samples(seconds: 2, amplitude: 0.5), wallUs: 0)
+        try pipeline.finish()
+
+        XCTAssertEqual(sink.seconds.map(\.monotonicUs), [0, 1_000_000, 2_000_000])
+        XCTAssertEqual(sink.gaps.count, 1, "基準を打ち直すのは最初の1回だけ")
     }
 }
