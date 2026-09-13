@@ -65,3 +65,47 @@ public struct DetailWindow: Equatable {
         self.frames = frames
     }
 }
+
+/// 記録できなかった区間(ADR-0015 決定7)。
+///
+/// **記録の空隙には2種類ある。** 静かだった区間と、測れていなかった区間である。
+/// 空隙そのものは同じ形で残るので、区別できるのはこの行があるときだけになる。
+/// 残さないと、取りこぼしが「その間ずっと静かだった」と読める
+/// ——ADR-0008 が避けようとした「記録上は正常」を、実装の都合で作ることになる。
+public struct RecordingGap: Equatable {
+    /// なぜ基準を打ち直したか。
+    ///
+    /// **どれも「途切れたと分かっている」事象である**(ADR-0015 決定2)。
+    /// 閾値で推測したものはここに入らない。
+    ///
+    /// エンジンが走ったまま過負荷でバッファが飛んだ場合は、こちらの知っている事象が
+    /// 何も起きない。**それを拾えるのは音声層が報告するサンプル時刻の不連続だけで、
+    /// 取れるかどうかがまだ確かめられていない**(ADR-0015「確かめること」)。
+    /// 取れると分かった時点でここに1つ増える。
+    public enum Reason: String {
+        /// 最初のバッファ。セッションの開始からキャプチャが実際に始まるまで。
+        case start
+        /// 停止してからの再開。ADR-0014 の休止・再開、タップの張り直し。
+        case resume
+        /// デバイスの差し替え。
+        case deviceChange
+        /// **読み出し側のためだけにある。** 新しい版が書いた理由を古い版で読んだときに入る。
+        /// 書き手はこれを使わない。空隙を落とさずに残すためのもので、
+        /// 理由が読めないことと、途切れていないことは別である。
+        case unknown
+    }
+
+    /// 直前に記録したフレームの時刻。最初のバッファではセッションの原点(0)。
+    public let startUs: Int64
+    /// 打ち直した基準。
+    public let endUs: Int64
+    public let reason: Reason
+
+    public init(startUs: Int64, endUs: Int64, reason: Reason) {
+        self.startUs = startUs
+        self.endUs = endUs
+        self.reason = reason
+    }
+
+    public var durationUs: Int64 { endUs - startUs }
+}

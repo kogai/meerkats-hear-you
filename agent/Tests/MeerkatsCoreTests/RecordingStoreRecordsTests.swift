@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import MeerkatsCore
 
@@ -170,5 +171,55 @@ final class RecordingStoreRecordsTests: XCTestCase {
         let read = try store.seconds(streamId: streamId)
         XCTAssertEqual(read.count, 1)
         XCTAssertEqual(read[0].meanDbfs, -33, accuracy: 0.0001)
+    }
+
+    // MARK: - 空隙(ADR-0015 決定7)
+
+    func testGapsRoundTrip() throws {
+        let written = [
+            RecordingGap(startUs: 0, endUs: 300_000, reason: .start),
+            RecordingGap(startUs: 60_000_000, endUs: 61_500_000, reason: .deviceChange),
+        ]
+        for gap in written {
+            try store.appendGap(streamId: streamId, gap)
+        }
+
+        XCTAssertEqual(try store.gaps(streamId: streamId), written)
+    }
+
+    /// **同じ `start_us` の空隙が並んでも、どれも消えない。**
+    ///
+    /// 音が戻らないまま打ち直しが続くと、長さ0の空隙が同じ時刻に並ぶ。
+    /// 主キーを `(stream_id, start_us)` にしていると後の1本が前を消し、
+    /// 何度途切れたのかが記録から消える。回数はそれ自体が読みたい値である。
+    func testGapsWithTheSameStartAreAllKept() throws {
+        for _ in 0 ..< 3 {
+            try store.appendGap(
+                streamId: streamId,
+                RecordingGap(startUs: 1_000_000, endUs: 1_000_000, reason: .resume)
+            )
+        }
+
+        XCTAssertEqual(try store.gaps(streamId: streamId).count, 3)
+    }
+
+    /// **知らない理由でも空隙は残る。** 新しい版が書いた理由を古い版で読む場面で、
+    /// 行ごと落とすと「途切れていなかった」ことになる。理由が読めないことと、
+    /// 途切れていないことは別である。
+    func testUnknownReasonKeepsTheGap() throws {
+        let statement = try store.prepare(
+            "INSERT INTO gaps (stream_id, start_us, end_us, reason) VALUES (?, ?, ?, ?);"
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, streamId)
+        sqlite3_bind_int64(statement, 2, 2_000_000)
+        sqlite3_bind_int64(statement, 3, 5_000_000)
+        sqlite3_bind_text(statement, 4, "sampleTimeGap", -1, RecordingStore.transient)
+        try store.step(statement)
+
+        let read = try store.gaps(streamId: streamId)
+        XCTAssertEqual(read.count, 1)
+        XCTAssertEqual(read.first?.reason, .unknown)
+        XCTAssertEqual(read.first?.durationUs, 3_000_000)
     }
 }
