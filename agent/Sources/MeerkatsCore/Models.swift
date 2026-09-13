@@ -95,7 +95,7 @@ public struct RecordingGap: Equatable {
         case unknown
     }
 
-    /// 直前に記録したフレームの時刻。最初のバッファではセッションの原点(0)。
+    /// 直前に記録したフレームの**終わり**。最初のバッファではセッションの原点(0)。
     public let startUs: Int64
     /// 打ち直した基準。
     public let endUs: Int64
