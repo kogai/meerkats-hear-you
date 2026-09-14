@@ -1,0 +1,109 @@
+import Foundation
+
+/// 結んだ対の一覧。
+///
+/// ADR-0017 決定5 の Trust On First Use をここに置く。ただし ADR-0009 の想定とは
+/// **効く場所が違う。**
+///
+/// ADR-0009 は「ランデブーから届いた鍵が前と変わっていたら警告する」形を想定していた。
+/// ADR-0017 で鍵が招待コードだけを通るようになったので、**届いた鍵が化ける経路が無い。**
+/// 識別子は鍵から導くので、鍵が変われば識別子も変わり、別の相手として現れる。
+///
+/// したがって、ここで「変わった」と分かるのは**名前が同じで鍵が違うとき**だけになる。
+/// 相手が機械を入れ替えて新しい招待コードを寄こした、という場面である。
+public struct PairStore: Equatable, Codable {
+    /// 識別子から引く。並びは保存しない(`all` が決める)。
+    private var pairs: [String: Pair]
+
+    public init() {
+        pairs = [:]
+    }
+
+    /// `add` で何が起きたか。
+    public enum Outcome: Equatable {
+        /// 新しい対を結んだ。
+        case created
+        /// 同じ鍵・同じ名前。招待コードをもう一度貼っただけ。何も変えていない。
+        case unchanged
+        /// 同じ鍵で名前だけ変えた。
+        case renamed(from: String)
+        /// **同じ名前が、別の鍵で既にある。何も変えていない。**
+        ///
+        /// 相手が機械を入れ替えた場面がこれにあたる。古い対は二度と繋がらないので
+        /// 切るのが正しい(ADR-0017 決定5)が、**ここでは切らない。**
+        ///
+        /// 名前は利用者が付けたもので、別人に同じ名前を付けることがある。
+        /// 名前が一致しただけで古い対を消すと、**別人の対が黙って消える。**
+        /// どちらなのかを知っているのは利用者だけなので、判断を返す。
+        /// 切ると決めたら `remove` を呼んでから、もう一度 `add` する。
+        case nameTaken(by: Pair)
+    }
+
+    /// 招待コードから取り出した身元で対を結ぶ。
+    ///
+    /// **`nameTaken` のときは何も変えない。** 呼び出し側が決めるまで、
+    /// 古い対も新しい鍵も、どちらも失われない状態で止める。
+    @discardableResult
+    public mutating func add(
+        _ identity: PeerIdentity,
+        name: String,
+        wallUs: Int64
+    ) -> Outcome {
+        if let existing = pairs[identity.identifier] {
+            guard existing.name != name else { return .unchanged }
+            // **`pairedAtWallUs` は更新しない。** いつ結んだかは、結んだ日のままが正しい。
+            pairs[identity.identifier] = Pair(
+                identity: existing.identity,
+                name: name,
+                pairedAtWallUs: existing.pairedAtWallUs,
+                lastConnectedWallUs: existing.lastConnectedWallUs
+            )
+            return .renamed(from: existing.name)
+        }
+
+        if let taken = pairs.values.first(where: { $0.name == name }) {
+            return .nameTaken(by: taken)
+        }
+
+        pairs[identity.identifier] = Pair(
+            identity: identity, name: name, pairedAtWallUs: wallUs
+        )
+        return .created
+    }
+
+    @discardableResult
+    public mutating func remove(_ identity: PeerIdentity) -> Pair? {
+        pairs.removeValue(forKey: identity.identifier)
+    }
+
+    /// 繋がったことを記録する。ADR-0009 の「最後に繋がったのはいつか」の出どころ。
+    ///
+    /// **知らない相手は黙って捨てる。** 対を切ったあとに在庫の接続が繋がることがあり、
+    /// そこで対が復活しては、切った意味が無くなる。
+    public mutating func markConnected(_ identity: PeerIdentity, wallUs: Int64) {
+        guard var pair = pairs[identity.identifier] else { return }
+        pair.lastConnectedWallUs = wallUs
+        pairs[identity.identifier] = pair
+    }
+
+    public func pair(for identity: PeerIdentity) -> Pair? {
+        pairs[identity.identifier]
+    }
+
+    /// 表示のための一覧。**結んだ順に返す。**
+    ///
+    /// 辞書の並びをそのまま出すと、起動のたびに順序が変わって、どれが増えたのかを
+    /// 目で追えなくなる。同じ時刻に結ばれた対の並びまで決めておくのは、
+    /// 決めないと同じ内容から違う並びが出て、表示もテストも揺れるからである。
+    public var all: [Pair] {
+        pairs.values.sorted { left, right in
+            if left.pairedAtWallUs != right.pairedAtWallUs {
+                return left.pairedAtWallUs < right.pairedAtWallUs
+            }
+            return left.identity.identifier < right.identity.identifier
+        }
+    }
+
+    public var isEmpty: Bool { pairs.isEmpty }
+    public var count: Int { pairs.count }
+}
