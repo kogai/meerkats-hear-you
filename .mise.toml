@@ -27,3 +27,8 @@ run = "python3 xcorr-alignment-resolution.py"
 description = "Build a signed .app without Xcode and check it can hold mic permission"
 dir = "experiments/macos-app-bundle-spike"
 run = "./run.sh"
+
+[tasks.nat]
+description = "Measure this network's NAT mapping behaviour with public STUN servers"
+dir = "experiments/nat-behaviour"
+run = "swift run NATBehaviourSpike"
