@@ -28,4 +28,4 @@
 | [0014](0014-suspend-when-not-speaking.md) | 自分の発話が途切れたら記録を休止する | Accepted |
 | [0015](0015-frame-count-with-clock-resync.md) | 記録の時刻はフレーム数で刻み、途切れたと分かったときだけ基準を打ち直す | Accepted |
 | [0016](0016-handoff-off-the-audio-thread.md) | 音のスレッドは値を渡すだけにし、記録は専用のスレッドで書く | Accepted |
-| [0017](0017-public-key-rides-the-invite.md) | 公開鍵は招待コードで渡し、ランデブーには預けない | Proposed |
+| [0017](0017-public-key-rides-the-invite.md) | 公開鍵は招待コードで渡し、ランデブーには預けない | Accepted |
