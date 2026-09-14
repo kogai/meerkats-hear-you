@@ -15,15 +15,29 @@ public enum InviteCode {
     /// 先頭の目印。末尾の数字は形式の版で、変えるときはここを上げる。
     public static let prefix = "meerkats1:"
 
-    /// 貼り間違いを捕まえるための検査値。公開鍵のハッシュの先頭。
+    /// **事故を捕まえるための検査値。改竄には何も効かない。**
+    ///
+    /// 値は `SHA256(publicKey)` の先頭で、鍵さえあれば誰でも計算し直せる。
+    /// 鍵を差し替える者は検査値も一緒に付け替えられるので、ここは通る。
+    /// 捕まえられるのは貼り間違い、切れ、文字化けだけである。
+    ///
+    /// 改竄を捕まえる手段はこの形式には無い。ADR-0017 がそう決めた
+    /// (招待コードが通る経路そのものを信頼する、という前提を置いた)。
     static let checksumBytes = 4
 
     public enum DecodeError: Error, Equatable {
         case wrongPrefix
         case notBase64
         case wrongLength(Int)
-        /// 長さは合っているが中身が壊れている。**1文字の書き換えはここでしか捕まらない。**
+        /// 長さは合っているが中身が壊れている。**貼り間違いはここでしか捕まらない。**
+        /// 改竄はここでは捕まらない(`checksumBytes` を参照)。
         case checksumMismatch
+        /// 32バイト揃っていて検査値も合うが、**鍵として使えないバイト列。**
+        ///
+        /// 正規形でないもの(同じ鍵が別の識別子になる)と、位数の小さい点
+        /// (鍵合意が必ず失敗する)がこれにあたる。検査値は鍵から計算するので、
+        /// そういう鍵を載せたコードは検査値も揃ってしまい、ここまで来る。
+        case unusableKey
     }
 
     public static func encode(_ identity: PeerIdentity) -> String {
@@ -49,11 +63,12 @@ public enum InviteCode {
         let key = Data(payload.prefix(PeerIdentity.publicKeyBytes))
         let tail = Array(payload.suffix(checksumBytes))
         // **長さの検査だけでは足りない。** 切れたコードは長さで捕まるが、
-        // 1文字だけ書き換わったコードは同じ長さの別の鍵になって通ってしまう。
+        // 1文字だけ書き損じたコードは同じ長さの別の鍵になって通ってしまう。
         guard tail == checksum(for: key) else { throw DecodeError.checksumMismatch }
 
+        // ここに来る `key` は必ず32バイトなので、弾かれる理由は長さではない。
         guard let identity = PeerIdentity(publicKey: key) else {
-            throw DecodeError.wrongLength(key.count)
+            throw DecodeError.unusableKey
         }
         return identity
     }
