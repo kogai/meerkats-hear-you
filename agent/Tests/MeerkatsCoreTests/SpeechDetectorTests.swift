@@ -114,4 +114,23 @@ final class SpeechDetectorTests: XCTestCase {
         // 追従できていれば、再開した発話を拾える。
         XCTAssertTrue(detector.push(-25))
     }
+
+    /// 打ち直しのときに窓を捨てる(ADR-0015 決定4)。
+    ///
+    /// **雑音フロアはその環境のものである。** うるさい機械で確立したフロアが、
+    /// 静かな機械へ移ったあとも30秒効き続けると、その間の発話を拾えない。
+    /// ADR-0014 の休止判定は発話の有無で測るので、嘘の無発話がそのまま積まれる。
+    func testResetDropsTheFloorLearnedBefore() {
+        var detector = SpeechDetector(windowFrames: 100, marginDb: 12, recomputeInterval: 10)
+        for _ in 0 ..< 100 { _ = detector.push(-30) }   // うるさい機械のフロア
+        XCTAssertEqual(detector.noiseFloorDbfs, -30, accuracy: 0.001)
+        XCTAssertFalse(detector.push(-40), "-30 のフロアの下では、-40 は発話にならない")
+
+        detector.reset()
+
+        XCTAssertEqual(detector.noiseFloorDbfs, Levels.floorDbfs, accuracy: 0.001)
+        // 静かな機械のフロアを確立し直せば、同じレベルが発話として立つ。
+        for _ in 0 ..< 100 { _ = detector.push(-70) }
+        XCTAssertTrue(detector.push(-40), "移った先のフロアで測り直される")
+    }
 }

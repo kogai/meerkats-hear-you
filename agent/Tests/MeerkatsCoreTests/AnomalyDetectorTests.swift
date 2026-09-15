@@ -155,4 +155,35 @@ final class AnomalyDetectorTests: XCTestCase {
                 "\(stream) の継続秒数が0以下だと、瞬間的な変動で鳴る")
         }
     }
+
+    /// 記録が途切れた区間をまたいで継続の数えが繋がらないようにする(ADR-0015 決定4)。
+    ///
+    /// **`sustainedSeconds` は「続いたこと」を見る。** 「2秒 → 20分の空白 → 1秒」で
+    /// 3秒続いたことになれば、続いていないものを続いたと言って通知することになる。
+    func testResetDropsTheStreak() {
+        var detector = AnomalyDetector(thresholds: .init(sustainedSeconds: 3))
+        let quiet = record(mean: -55)
+
+        XCTAssertEqual(push(&detector, quiet, times: 2), [])
+        detector.reset()
+        XCTAssertEqual(push(&detector, quiet, times: 2), [], "数えが繋がっている")
+        XCTAssertEqual(detector.push(quiet, noiseFloorDbfs: noiseFloor), .lowLevel)
+    }
+
+    /// 継続中の異常も落とす。
+    ///
+    /// 残すと、休止をまたいで同じ異常が続いた場合に一度も通知されない。
+    /// **利用者から見れば、再開してから初めて起きた異常である。**
+    func testResetDropsTheFiringSet() {
+        var detector = AnomalyDetector(thresholds: .init(sustainedSeconds: 2))
+        let quiet = record(mean: -55)
+
+        XCTAssertEqual(push(&detector, quiet, times: 2), [.lowLevel])
+        XCTAssertEqual(detector.active, [.lowLevel])
+
+        detector.reset()
+
+        XCTAssertTrue(detector.active.isEmpty)
+        XCTAssertEqual(push(&detector, quiet, times: 2), [.lowLevel], "再開後に鳴らない")
+    }
 }
