@@ -29,3 +29,4 @@
 | [0015](0015-frame-count-with-clock-resync.md) | 記録の時刻はフレーム数で刻み、途切れたと分かったときだけ基準を打ち直す | Accepted |
 | [0016](0016-handoff-off-the-audio-thread.md) | 音のスレッドは値を渡すだけにし、記録は専用のスレッドで書く | Accepted |
 | [0017](0017-public-key-rides-the-invite.md) | 公開鍵は招待コードで渡し、ランデブーには預けない | Accepted |
+| [0018](0018-per-pair-rendezvous-handle.md) | ランデブーで名刺を引く値を、対ごとに分ける | Accepted |
