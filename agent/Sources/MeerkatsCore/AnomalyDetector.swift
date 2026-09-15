@@ -111,6 +111,19 @@ public struct AnomalyDetector {
         return entered
     }
 
+    /// 継続の数えを捨てて初期状態に戻す(ADR-0015 決定4)。
+    ///
+    /// **`sustainedSeconds` は「続いたこと」を見る。** 記録が途切れた区間をまたいで
+    /// 数えが繋がると、「2秒 → 20分の空白 → 1秒」で3秒続いたことになり、
+    /// 続いていないものを続いたと言って通知する。
+    ///
+    /// `firing` も落とす。落とさないと、休止をまたいで同じ異常が続いた場合に
+    /// 一度も通知されない。**利用者から見れば、再開してから初めて起きた異常である。**
+    public mutating func reset() {
+        consecutive.removeAll(keepingCapacity: true)
+        firing.removeAll(keepingCapacity: true)
+    }
+
     private func matches(
         _ kind: AnomalyKind,
         record: SecondRecord,
