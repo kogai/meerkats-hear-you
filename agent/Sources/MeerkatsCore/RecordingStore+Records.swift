@@ -7,10 +7,10 @@ extension RecordingStore {
         try exec(
             """
             CREATE TABLE IF NOT EXISTS clock_anchors (
-              session_id    INTEGER NOT NULL REFERENCES sessions(id),
+              stream_id     INTEGER NOT NULL REFERENCES streams(id),
               monotonic_us  INTEGER NOT NULL,
               wall_us       INTEGER NOT NULL,
-              PRIMARY KEY (session_id, monotonic_us)
+              PRIMARY KEY (stream_id, monotonic_us)
             );
 
             CREATE TABLE IF NOT EXISTS seconds (
@@ -45,15 +45,24 @@ extension RecordingStore {
         )
     }
 
-    public func appendAnchor(sessionId: Int64, _ anchor: ClockAnchor) throws {
+    /// **アンカーはストリーム単位で持つ**(ADR-0015 決定5)。
+    ///
+    /// セッション単位にしていたのは「同じ機械の同じ時計で観測されるのだから二重に持つ
+    /// 必要がない」という理由だった。**時刻をフレーム数で刻む以上、これは成り立たない。**
+    /// 2本のストリームは別のデバイスのクロックに乗っていて、公称レートからのずれ方が違う。
+    /// 片方のアンカーでもう片方の時刻を換算すれば、その差だけ間違う。
+    ///
+    /// ADR-0015 決定6 で時計がセッションに1つになったので**原点は揃っている**が、
+    /// 揃っているのは原点だけで、進み方は揃っていない。
+    public func appendAnchor(streamId: Int64, _ anchor: ClockAnchor) throws {
         let statement = try prepare(
             """
-            INSERT OR REPLACE INTO clock_anchors (session_id, monotonic_us, wall_us)
+            INSERT OR REPLACE INTO clock_anchors (stream_id, monotonic_us, wall_us)
             VALUES (?, ?, ?);
             """
         )
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, sessionId)
+        sqlite3_bind_int64(statement, 1, streamId)
         sqlite3_bind_int64(statement, 2, anchor.monotonicUs)
         sqlite3_bind_int64(statement, 3, anchor.wallUs)
         try step(statement)
@@ -202,15 +211,15 @@ extension RecordingStore {
         return out
     }
 
-    public func anchors(sessionId: Int64) throws -> [ClockAnchor] {
+    public func anchors(streamId: Int64) throws -> [ClockAnchor] {
         let statement = try prepare(
             """
             SELECT monotonic_us, wall_us FROM clock_anchors
-            WHERE session_id = ? ORDER BY monotonic_us;
+            WHERE stream_id = ? ORDER BY monotonic_us;
             """
         )
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, sessionId)
+        sqlite3_bind_int64(statement, 1, streamId)
 
         var out: [ClockAnchor] = []
         while sqlite3_step(statement) == SQLITE_ROW {

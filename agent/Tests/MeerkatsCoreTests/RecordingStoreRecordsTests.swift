@@ -87,12 +87,12 @@ final class RecordingStoreRecordsTests: XCTestCase {
     func testAnchorsRoundTrip() throws {
         // 単調時計が300秒進む間に、実時刻は300秒と1msぶん進んだ状況。
         // この1msの食い違いが、そのまま換算の不確かさになる。
-        try store.appendAnchor(sessionId: sessionId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
+        try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
         try store.appendAnchor(
-            sessionId: sessionId, ClockAnchor(monotonicUs: 300_000_000, wallUs: 300_002_000)
+            streamId: streamId, ClockAnchor(monotonicUs: 300_000_000, wallUs: 300_002_000)
         )
 
-        let anchors = try store.anchors(sessionId: sessionId)
+        let anchors = try store.anchors(streamId: streamId)
         XCTAssertEqual(anchors.count, 2)
         XCTAssertEqual(anchors[0], ClockAnchor(monotonicUs: 0, wallUs: 1_000))
 
@@ -221,5 +221,40 @@ final class RecordingStoreRecordsTests: XCTestCase {
         XCTAssertEqual(read.count, 1)
         XCTAssertEqual(read.first?.reason, .unknown)
         XCTAssertEqual(read.first?.durationUs, 3_000_000)
+    }
+
+    /// **2本のストリームのアンカーが混ざらない。**
+    ///
+    /// 混ざっていた頃は主キーが `(session_id, monotonic_us)` で `INSERT OR REPLACE` だったので、
+    /// 2本目が同じ単調時刻に打つと1本目を**消していた。** 消えたことは何にも現れず、
+    /// 記録全体の実時刻が静かにずれる形で出てくる。
+    func testAnchorsAreScopedToTheirStream() throws {
+        let other = try store.addStream(
+            sessionId: sessionId, kind: .output, deviceName: nil, sampleRate: 48_000, frameMs: 20
+        )
+
+        // 同じ単調時刻に、別々の実時刻で打つ。デバイスのクロックのずれ方が違うので、
+        // 同じ原点から同じだけ進んでも実時刻は一致しない。
+        try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
+        try store.appendAnchor(streamId: other, ClockAnchor(monotonicUs: 0, wallUs: 9_000))
+
+        XCTAssertEqual(try store.anchors(streamId: streamId), [ClockAnchor(monotonicUs: 0, wallUs: 1_000)])
+        XCTAssertEqual(try store.anchors(streamId: other), [ClockAnchor(monotonicUs: 0, wallUs: 9_000)])
+    }
+
+    /// 同じストリームの同じ単調時刻に打ち直したら、新しいほうが残る。
+    func testAnchorReplacesWithinTheSameStream() throws {
+        try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
+        try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 2_000))
+
+        XCTAssertEqual(try store.anchors(streamId: streamId), [ClockAnchor(monotonicUs: 0, wallUs: 2_000)])
+    }
+
+    /// **知らないストリームのアンカーは入らない。**
+    /// 外部キーが効いていないと、どのストリームにも属さない行が静かに溜まる。
+    func testAnchorRequiresAnExistingStream() {
+        XCTAssertThrowsError(
+            try store.appendAnchor(streamId: streamId + 9_999, ClockAnchor(monotonicUs: 0, wallUs: 1))
+        )
     }
 }

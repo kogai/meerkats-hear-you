@@ -94,9 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     startedStreamId = streamId
 
-                    let sink = StoreSink(
-                        store: store, streamId: streamId, sessionId: currentSessionId
-                    )
+                    let sink = StoreSink(store: store, streamId: streamId)
                     let pipeline = RecordingPipeline(
                         configuration: configuration, sink: sink, liveState: liveState,
                         clock: clock
@@ -150,16 +148,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// RecordingPipeline の出力先を RecordingStore に繋ぐ。
-/// アンカーはセッションに、レベルはストリームに紐づくので、両方のIDを持つ。
+///
+/// **持つIDはストリームだけ。** アンカーもストリームに紐づくようになった
+/// (ADR-0015 決定5)。2本のストリームは別のデバイスのクロックに乗っているので、
+/// 片方のアンカーでもう片方を換算すると、ずれ方の差だけ間違う。
 private final class StoreSink: RecordingPipeline.Sink {
     private let store: RecordingStore
     private let streamId: Int64
-    private let sessionId: Int64
 
-    init(store: RecordingStore, streamId: Int64, sessionId: Int64) {
+    init(store: RecordingStore, streamId: Int64) {
         self.store = store
         self.streamId = streamId
-        self.sessionId = sessionId
     }
 
     func write(seconds records: [SecondRecord]) throws {
@@ -171,7 +170,7 @@ private final class StoreSink: RecordingPipeline.Sink {
     }
 
     func write(anchor: ClockAnchor) throws {
-        try store.appendAnchor(sessionId: sessionId, anchor)
+        try store.appendAnchor(streamId: streamId, anchor)
     }
 
     func write(gap: RecordingGap) throws {
