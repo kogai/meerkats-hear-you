@@ -66,6 +66,27 @@ public struct AnchorScheduler {
     }
 }
 
+/// ひとつのストリームのアンカー列。
+///
+/// **素の配列で渡さない。** `[ClockAnchor]` を受ける形だと、2本のストリームのアンカーを
+/// 繋げた配列も、片方のIDで引いた配列をもう片方に使うのも、型を通ってしまう。
+///
+/// そして**壊れ方が静かで、混ぜたほうが自信ありげな答えを出す。** 混ざった列は
+/// 間隔が細かくなるので `interpolate` が返す不確かさは小さくなるが、内挿の相手は
+/// 別のクロックに乗った点なので、値そのものは外れる。ADR-0003 が TrueTime から採った
+/// **「真値は区間に入る」という約束が、そこで破れる。**
+public struct StreamAnchors: Equatable {
+    public let streamId: Int64
+    public let anchors: [ClockAnchor]
+
+    public init(streamId: Int64, anchors: [ClockAnchor]) {
+        self.streamId = streamId
+        self.anchors = anchors
+    }
+
+    public var isEmpty: Bool { anchors.isEmpty }
+}
+
 /// 実時刻への換算結果。
 ///
 /// ADR-0003 は TrueTime(Spanner)にならい、時刻を点ではなく不確かさを伴う区間として扱うと
@@ -89,12 +110,15 @@ public enum ClockConversion {
     public static let assumedDriftPpm: Double = 100
 
     /// 単調時刻を実時刻へ換算する。アンカーが無ければ換算できない。
+    ///
+    /// **同じストリームのアンカーだけを使う。** ストリームごとに `wall_us` の伸び方が違うので、
+    /// 別のストリームの点を混ぜると内挿の相手が別のクロックになる(`StreamAnchors` 参照)。
     public static func wallTime(
         forMonotonicUs target: Int64,
-        anchors: [ClockAnchor]
+        in stream: StreamAnchors
     ) -> WallClockEstimate? {
-        guard !anchors.isEmpty else { return nil }
-        let sorted = anchors.sorted { $0.monotonicUs < $1.monotonicUs }
+        guard !stream.isEmpty else { return nil }
+        let sorted = stream.anchors.sorted { $0.monotonicUs < $1.monotonicUs }
 
         if let bracket = bracketing(target, in: sorted) {
             return interpolate(target, low: bracket.low, high: bracket.high)

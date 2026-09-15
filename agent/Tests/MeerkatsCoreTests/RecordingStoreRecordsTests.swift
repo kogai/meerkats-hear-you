@@ -93,11 +93,12 @@ final class RecordingStoreRecordsTests: XCTestCase {
         )
 
         let anchors = try store.anchors(streamId: streamId)
-        XCTAssertEqual(anchors.count, 2)
-        XCTAssertEqual(anchors[0], ClockAnchor(monotonicUs: 0, wallUs: 1_000))
+        XCTAssertEqual(anchors.streamId, streamId)
+        XCTAssertEqual(anchors.anchors.count, 2)
+        XCTAssertEqual(anchors.anchors[0], ClockAnchor(monotonicUs: 0, wallUs: 1_000))
 
         // 読み出したアンカーがそのまま換算に使えること。
-        let estimate = ClockConversion.wallTime(forMonotonicUs: 150_000_000, anchors: anchors)
+        let estimate = ClockConversion.wallTime(forMonotonicUs: 150_000_000, in: anchors)
         XCTAssertNotNil(estimate)
         XCTAssertEqual(estimate?.uncertaintyUs, 1_000, "この区間の食い違いが不確かさになる")
     }
@@ -225,9 +226,14 @@ final class RecordingStoreRecordsTests: XCTestCase {
 
     /// **2本のストリームのアンカーが混ざらない。**
     ///
-    /// 混ざっていた頃は主キーが `(session_id, monotonic_us)` で `INSERT OR REPLACE` だったので、
-    /// 2本目が同じ単調時刻に打つと1本目を**消していた。** 消えたことは何にも現れず、
-    /// 記録全体の実時刻が静かにずれる形で出てくる。
+    /// 防ぎたいのは消失ではなく**換算の混線**である。セッション単位のままだと、
+    /// 引いた配列に2本ぶんが混ざる。混ざった列は間隔が細かくなるので `interpolate` の
+    /// 不確かさは**小さく**出るのに、内挿の相手は別のクロックに乗った点なので値は外れる。
+    /// **混ぜたほうが自信ありげな、間違った答えが返る。**
+    ///
+    /// (`INSERT OR REPLACE` による消失のほうは、ADR-0015 決定6 で時計が1つになった時点で
+    /// ほぼ起きなくなっていた。アンカーの単調時刻が `baseUs + 300秒 * n` に限られ、
+    /// 衝突には2本の `baseUs` の差が300秒の倍数であることが要るため。)
     func testAnchorsAreScopedToTheirStream() throws {
         let other = try store.addStream(
             sessionId: sessionId, kind: .output, deviceName: nil, sampleRate: 48_000, frameMs: 20
@@ -238,23 +244,43 @@ final class RecordingStoreRecordsTests: XCTestCase {
         try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
         try store.appendAnchor(streamId: other, ClockAnchor(monotonicUs: 0, wallUs: 9_000))
 
-        XCTAssertEqual(try store.anchors(streamId: streamId), [ClockAnchor(monotonicUs: 0, wallUs: 1_000)])
-        XCTAssertEqual(try store.anchors(streamId: other), [ClockAnchor(monotonicUs: 0, wallUs: 9_000)])
+        XCTAssertEqual(
+            try store.anchors(streamId: streamId).anchors,
+            [ClockAnchor(monotonicUs: 0, wallUs: 1_000)]
+        )
+        XCTAssertEqual(
+            try store.anchors(streamId: other).anchors,
+            [ClockAnchor(monotonicUs: 0, wallUs: 9_000)]
+        )
     }
 
-    /// 同じストリームの同じ単調時刻に打ち直したら、新しいほうが残る。
-    func testAnchorReplacesWithinTheSameStream() throws {
+    /// **同じストリームの同じ単調時刻が二度来たら投げる。黙って上書きしない。**
+    ///
+    /// 上書きすると、ドリフトを測るために置いた点が消える。いまの書き手は1本の
+    /// ストリームの中で単調時刻を厳密に増やすので、ここに来ること自体が前提の崩れを意味する。
+    func testAnchorRefusesADuplicateWithinTheSameStream() throws {
         try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 1_000))
-        try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 2_000))
 
-        XCTAssertEqual(try store.anchors(streamId: streamId), [ClockAnchor(monotonicUs: 0, wallUs: 2_000)])
+        XCTAssertThrowsError(
+            try store.appendAnchor(streamId: streamId, ClockAnchor(monotonicUs: 0, wallUs: 2_000))
+        )
+        let kept = try store.anchors(streamId: streamId)
+        XCTAssertEqual(kept.anchors, [ClockAnchor(monotonicUs: 0, wallUs: 1_000)], "先の点が残る")
     }
 
     /// **知らないストリームのアンカーは入らない。**
     /// 外部キーが効いていないと、どのストリームにも属さない行が静かに溜まる。
     func testAnchorRequiresAnExistingStream() {
         XCTAssertThrowsError(
-            try store.appendAnchor(streamId: streamId + 9_999, ClockAnchor(monotonicUs: 0, wallUs: 1))
-        )
+            try store.appendAnchor(
+                streamId: streamId + 9_999, ClockAnchor(monotonicUs: 0, wallUs: 1)
+            )
+        ) { error in
+            // **落ちた理由まで見る。** 見ないと、SQLが壊れて `prepare` が失敗しても
+            // このテストは緑のまま通り、外部キーが効いていないことに気づけない。
+            XCTAssertTrue(
+                "\(error)".contains("FOREIGN KEY"), "外部キー違反ではない誤り: \(error)"
+            )
+        }
     }
 }

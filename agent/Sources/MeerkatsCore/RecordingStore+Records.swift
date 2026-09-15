@@ -47,17 +47,25 @@ extension RecordingStore {
 
     /// **アンカーはストリーム単位で持つ**(ADR-0015 決定5)。
     ///
-    /// セッション単位にしていたのは「同じ機械の同じ時計で観測されるのだから二重に持つ
-    /// 必要がない」という理由だった。**時刻をフレーム数で刻む以上、これは成り立たない。**
-    /// 2本のストリームは別のデバイスのクロックに乗っていて、公称レートからのずれ方が違う。
-    /// 片方のアンカーでもう片方の時刻を換算すれば、その差だけ間違う。
+    /// 揃っていないのは `monotonic_us` の進み方ではない。`monotonic_us` は
+    /// `baseUs + frameIndex * frameDurationUs` で、刻みは公称値なので**2本とも同じ速さで進む。**
+    /// ADR-0015 決定6 で時計がセッションに1つになり、同じエポックにも乗った。
     ///
-    /// ADR-0015 決定6 で時計がセッションに1つになったので**原点は揃っている**が、
-    /// 揃っているのは原点だけで、進み方は揃っていない。
+    /// 揃っていないのは、**その刻みが実時刻の何マイクロ秒に当たるか**である。そこを決めるのは
+    /// デバイスのサンプルクロックで、2本は別の発振器に乗っている。公称 20ms が実際には
+    /// 20.002ms である側と 20.000ms である側では、`wall_us - monotonic_us` の伸び方が違う。
+    ///
+    /// 片方のアンカーでもう片方を換算すれば、その伸び方の差だけ間違う。
+    ///
+    /// **同じ (stream_id, monotonic_us) が二度来たら投げる。**
+    /// 上書きすると、ADR-0003 がドリフトを測るために置いた点が黙って消える。
+    /// すぐ下の `appendGap` が、同じ理由で主キーを避けて代理キーにしているのと揃えた。
+    /// いまの書き手は1本のストリームの中で単調時刻を厳密に増やすので、**ここに来ること自体が
+    /// 前提の崩れを意味する。**
     public func appendAnchor(streamId: Int64, _ anchor: ClockAnchor) throws {
         let statement = try prepare(
             """
-            INSERT OR REPLACE INTO clock_anchors (stream_id, monotonic_us, wall_us)
+            INSERT INTO clock_anchors (stream_id, monotonic_us, wall_us)
             VALUES (?, ?, ?);
             """
         )
@@ -211,7 +219,9 @@ extension RecordingStore {
         return out
     }
 
-    public func anchors(streamId: Int64) throws -> [ClockAnchor] {
+    /// **読んだ時点でストリームに縛る。** 素の配列で返すと、2本ぶんを繋げた配列も、
+    /// 片方のIDで引いた配列も、換算に渡せてしまう(`StreamAnchors` 参照)。
+    public func anchors(streamId: Int64) throws -> StreamAnchors {
         let statement = try prepare(
             """
             SELECT monotonic_us, wall_us FROM clock_anchors
@@ -230,7 +240,7 @@ extension RecordingStore {
                 )
             )
         }
-        return out
+        return StreamAnchors(streamId: streamId, anchors: out)
     }
 
     public func detailWindows(streamId: Int64, frameDurationUs: Int64) throws -> [DetailWindow] {
