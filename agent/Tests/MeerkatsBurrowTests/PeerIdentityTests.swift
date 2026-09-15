@@ -76,10 +76,11 @@ final class PeerIdentityTests: XCTestCase {
         XCTAssertNotEqual(identity.identifier, PairingKey().identity.identifier)
     }
 
-    /// **識別子から鍵を復元できない**(ADR-0017 決定3)。
+    /// **識別子から鍵を復元できない。**
     ///
-    /// ランデブーが預かるのはこちらで、公開鍵ではない。鍵をそのまま置いていないことを、
-    /// 「識別子の中に鍵の16進が現れない」という形で確かめる。
+    /// ADR-0018 でこの値は手元だけのものになったので、**漏れる先はもう無い。**
+    /// それでも見るのは、保存ファイルや記録に出たときに鍵そのものが読めないため。
+    /// 鍵をそのまま置いていないことを、「識別子の中に鍵の16進が現れない」形で確かめる。
     func testIdentifierDoesNotCarryTheKey() {
         let identity = PairingKey().identity
         let keyHex = Hex.string(identity.publicKey)
@@ -102,7 +103,8 @@ final class PeerIdentityTests: XCTestCase {
     }
 
     /// 指紋と識別子が別々のものから作られていないことを確かめる。
-    /// **別々だと、一覧の指紋とランデブーの識別子が食い違っても誰も気づけない。**
+    /// **別々だと、一覧に出ている指紋と、対を引くのに使っている識別子が
+    /// 違う鍵を指していても誰も気づけない。**
     func testFingerprintIsThePrefixOfTheIdentifier() {
         let identity = PairingKey().identity
         let flattened = identity.fingerprint.replacingOccurrences(of: "-", with: "")
