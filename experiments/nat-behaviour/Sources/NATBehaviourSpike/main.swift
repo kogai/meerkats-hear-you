@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 // ADR-0009 が「未検証の前提」に残した NAT の実挙動を測る。
@@ -191,6 +192,8 @@ struct Server {
     var port: UInt16
 }
 
+typealias Resolved = (server: Server, addr: sockaddr_in)
+
 let servers = [
     Server(label: "Google", host: "stun.l.google.com", port: 19302),
     Server(label: "Cloudflare", host: "stun.cloudflare.com", port: 3478),
@@ -200,75 +203,130 @@ func heading(_ text: String) {
     print("\n\(text)\n" + String(repeating: "-", count: 60))
 }
 
-do {
-    var resolved: [(server: Server, addr: sockaddr_in)] = []
-    for server in servers {
-        resolved.append((server: server, addr: try resolveIPv4(host: server.host, port: server.port)))
+/// 応答が無いことは**測定の結果**なので、失敗として投げずに nil で返す。
+/// 壊れた応答のほうは投げる。この2つを混ぜると、サーバ1台の不調を
+/// 「この回線では STUN が通らない」と読むことになる。
+func queryOrNil(_ fd: Int32, _ entry: Resolved) throws -> Reflexive? {
+    do {
+        return try query(fd, entry.addr, entry.server.label)
+    } catch let error as SpikeError {
+        if case .noResponse = error { return nil }
+        throw error
     }
-    let a = resolved[0], b = resolved[1]
+}
+
+do {
+    var resolved: [Resolved] = []
+    for server in servers {
+        resolved.append(
+            (server: server, addr: try resolveIPv4(host: server.host, port: server.port))
+        )
+    }
 
     heading("1. STUN が通るか")
     for entry in resolved {
         print("  \(entry.server.label): \(entry.server.host) → \(dotted(entry.addr.sin_addr.s_addr))")
     }
-    let distinctServers = a.addr.sin_addr.s_addr != b.addr.sin_addr.s_addr
-    if !distinctServers {
-        print("  ⚠ 2つのサーバが同じIPに解決された。2節の判定は成り立たない。")
-    }
 
     let first = try makeSocket()
     let firstLocal = localPort(of: first)
-    let viaA = try query(first, a.addr, a.server.label)
-    print("  公開アドレス: \(viaA.address):\(viaA.port)  (自分側のポート \(firstLocal))")
 
-    if let routed = routedLocalAddress(to: a.addr), routed == viaA.address {
+    // **両方に当ててから「塞がれている」と言う。** 1台が落ちているだけのことがあり、
+    // 1台で打ち切ると、そのときのサーバの不調を回線の性質として読むことになる。
+    var answered: (entry: Resolved, reflexive: Reflexive)?
+    for entry in resolved {
+        if let reflexive = try queryOrNil(first, entry) {
+            answered = (entry: entry, reflexive: reflexive)
+            break
+        }
+        print("  \(entry.server.label): 応答なし")
+    }
+
+    // **応答が無いことはこのスパイクの答えの1つである。** 実行の失敗として扱うと、
+    // 出力を見た側が「走らなかった」と読んで、もう一度走らせることになる。
+    guard let answered else {
+        print("""
+              → **どのサーバからも応答が無い。これは測定の結果であって、実行の失敗ではない。**
+                UDP そのものか、STUN のポート (3478 / 19302) が塞がれている。
+                ADR-0009 の本線(ランデブーと穴あけ)は、この回線では成立しない。
+                落とし所のファイル書き出しが主経路になる。
+              """)
+        Darwin.close(first)
+        exit(0)
+    }
+    let primary = answered.entry
+    let viaPrimary = answered.reflexive
+    print("  公開アドレス: \(viaPrimary.address):\(viaPrimary.port)  (自分側のポート \(firstLocal))")
+
+    if let routed = routedLocalAddress(to: primary.addr), routed == viaPrimary.address {
         print("  ⚠ 反射アドレスが自分のアドレスと同じ。**この機械は NAT の内側に居ない。**")
         print("    測っても、普段使う回線のことは何も分からない。")
     }
 
     heading("2. 外から見えるポートは宛先によらないか (EIM か EDM か)")
-    if distinctServers {
-        let viaB = try query(first, b.addr, b.server.label)
-        print("  \(a.server.label) 経由: \(viaA.address):\(viaA.port)")
-        print("  \(b.server.label) 経由: \(viaB.address):\(viaB.port)")
-        if viaA == viaB {
+    // **別のIPへ出さないと、宛先を変えた意味が無い。** 同じIPに解決されたサーバを
+    // 2台と数えると、EDM でも同じポートが返り、EIM と読める。
+    let others = resolved.filter { $0.addr.sin_addr.s_addr != primary.addr.sin_addr.s_addr }
+    if let secondary = others.first, let viaSecondary = try queryOrNil(first, secondary) {
+        print("  \(primary.server.label) 経由: \(viaPrimary.address):\(viaPrimary.port)")
+        print("  \(secondary.server.label) 経由: \(viaSecondary.address):\(viaSecondary.port)")
+        if viaPrimary == viaSecondary {
             print("  → **宛先によらない (EIM)。** 穴あけが成立する側。")
         } else {
             print("  → **宛先ごとに変わる (EDM)。** この回線では穴あけが成立しない。")
         }
+    } else {
+        print("  別のIPのサーバから答えが返らない。**この節は判定できない。**")
+        print("  1台からしか返らないと、宛先を変えたときの違いを見られない。")
     }
 
     heading("3. ポートの振り方")
     let second = try makeSocket()
     let secondLocal = localPort(of: second)
-    let secondReflexive = try query(second, a.addr, a.server.label)
-    print("  1本目: 自分側 \(firstLocal) → 外から \(viaA.port)")
-    print("  2本目: 自分側 \(secondLocal) → 外から \(secondReflexive.port)")
-    if firstLocal == viaA.port && secondLocal == secondReflexive.port {
-        print("  → ポートをそのまま通している。")
+    if let secondReflexive = try queryOrNil(second, primary) {
+        print("  1本目: 自分側 \(firstLocal) → 外から \(viaPrimary.port)")
+        print("  2本目: 自分側 \(secondLocal) → 外から \(secondReflexive.port)")
+        if firstLocal == viaPrimary.port && secondLocal == secondReflexive.port {
+            print("  → ポートをそのまま通している。")
+        } else {
+            let delta = Int(secondReflexive.port) - Int(viaPrimary.port)
+            print("  → 付け替えている。2本の差は \(delta)。")
+        }
     } else {
-        let delta = Int(secondReflexive.port) - Int(viaA.port)
-        print("  → 付け替えている。2本の差は \(delta)。")
+        print("  2本目のソケットに答えが返らない。この節は判定できない。")
     }
     Darwin.close(second)
 
     heading("4. 黙っていてもマッピングは何秒生きるか")
     print("  **待つ長さごとに別のソケットを使う。** 問い合わせ自体がマッピングを延命するので、")
     print("  1本を使い回すと、測れるのは最後の間隔だけになる。")
-    let waits: [Int] = [30, 90, 180]
-    var probes: [(wait: Int, fd: Int32, before: Reflexive)] = []
-    for wait in waits {
+
+    // **沈黙は、そのソケットが最後にパケットを出した時刻から数える。** 共通の経過時間から
+    // 引く形にすると、問い合わせに要った秒数がそのまま勘定から抜ける。30秒待ったつもりで
+    // 33秒待ったものを「30秒」と書くことになり、keepalive の間隔をそのぶん短く見積もる。
+    var probes: [(wait: Int, fd: Int32, before: Reflexive, since: Date)] = []
+    for wait in [30, 90, 180] {
         let fd = try makeSocket()
-        probes.append((wait: wait, fd: fd, before: try query(fd, a.addr, a.server.label)))
+        guard let before = try queryOrNil(fd, primary) else {
+            print("  \(wait)秒ぶんのソケットに答えが返らない。この長さは測れない。")
+            Darwin.close(fd)
+            continue
+        }
+        probes.append((wait: wait, fd: fd, before: before, since: Date()))
     }
-    var elapsed = 0
     for probe in probes {
-        Thread.sleep(forTimeInterval: Double(probe.wait - elapsed))
-        elapsed = probe.wait
-        let after = try? query(probe.fd, a.addr, a.server.label)
+        let remaining = Double(probe.wait) - Date().timeIntervalSince(probe.since)
+        if remaining > 0 { Thread.sleep(forTimeInterval: remaining) }
+        // 測った値は、問い合わせを出す直前に読む。出したあとに読むと往復ぶん長く出る。
+        let silent = Date().timeIntervalSince(probe.since)
+        let after = try? query(probe.fd, primary.addr, primary.server.label)
         let alive = after == probe.before
         let shown = after.map { "\($0.address):\($0.port)" } ?? "応答なし"
-        print("  \(probe.wait)秒 沈黙: \(probe.before.address):\(probe.before.port) → \(shown)  \(alive ? "生きている" : "**切れた**")")
+        print(
+            "  沈黙 \(String(format: "%.1f", silent))秒 (狙い \(probe.wait)秒): "
+                + "\(probe.before.address):\(probe.before.port) → \(shown)  "
+                + (alive ? "生きている" : "**切れた**")
+        )
         Darwin.close(probe.fd)
     }
     Darwin.close(first)
