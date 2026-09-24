@@ -20,6 +20,23 @@ final class LiveStateTests: XCTestCase {
         XCTAssertTrue(snapshot.activeAnomalies.isEmpty)
     }
 
+    /// **一度も観測していないことが読み取れる。** 初期値は下限に張り付いたレベルなので、
+    /// 値だけでは「黙っていた」と区別が付かない。
+    func testSnapshotKnowsWhetherItHasObserved() {
+        let state = LiveState()
+        XCTAssertFalse(state.snapshot().hasObserved)
+
+        state.update(
+            record: SecondRecord(
+                monotonicUs: 0, meanDbfs: -30, minDbfs: -35, maxDbfs: -25,
+                speechRatio: 0, clipRatio: 0, frameCount: 50
+            ),
+            noiseFloorDbfs: -60,
+            anomalies: []
+        )
+        XCTAssertTrue(state.snapshot().hasObserved)
+    }
+
     func testUpdateIsVisibleInSnapshot() {
         let state = LiveState()
         state.update(record: record(mean: -25), noiseFloorDbfs: -60, anomalies: [.lowLevel])

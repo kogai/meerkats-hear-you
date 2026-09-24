@@ -16,18 +16,27 @@ public final class LiveState {
         /// 直近1分ぶんの1秒レベル。古い順。
         public let recentLevels: [Double]
 
+        /// **一度でも1秒を観測したか。** 既定値を置かない。置くと、観測していない
+        /// ストリームについて「無音」「異常なし」と言い切る側が既定になる。
+        ///
+        /// 下限に張り付いたレベルは、**黙っていた**ときと**測れていなかった**ときで同じ値に
+        /// なる。`RecordingGap` が空隙を2種類に分けているのと同じ区別が、表示にも要る。
+        public let hasObserved: Bool
+
         public init(
             meanDbfs: Double,
             isSpeaking: Bool,
             noiseFloorDbfs: Double,
             activeAnomalies: Set<AnomalyKind>,
-            recentLevels: [Double]
+            recentLevels: [Double],
+            hasObserved: Bool
         ) {
             self.meanDbfs = meanDbfs
             self.isSpeaking = isSpeaking
             self.noiseFloorDbfs = noiseFloorDbfs
             self.activeAnomalies = activeAnomalies
             self.recentLevels = recentLevels
+            self.hasObserved = hasObserved
         }
     }
 
@@ -38,6 +47,7 @@ public final class LiveState {
     private var isSpeaking = false
     private var noiseFloorDbfs = Levels.floorDbfs
     private var anomalies: Set<AnomalyKind> = []
+    private var observed = false
 
     /// - Parameter historySeconds: 表示に使う直近の秒数。既定は1分。
     public init(historySeconds: Int = 60) {
@@ -54,6 +64,7 @@ public final class LiveState {
         lock.lock()
         defer { lock.unlock() }
 
+        observed = true
         meanDbfs = record.meanDbfs
         isSpeaking = record.speechRatio > 0
         noiseFloorDbfs = floor
@@ -73,7 +84,8 @@ public final class LiveState {
             isSpeaking: isSpeaking,
             noiseFloorDbfs: noiseFloorDbfs,
             activeAnomalies: anomalies,
-            recentLevels: history
+            recentLevels: history,
+            hasObserved: observed
         )
     }
 }
