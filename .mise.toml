@@ -32,3 +32,8 @@ run = "./run.sh"
 description = "Measure this network's NAT mapping behaviour with public STUN servers"
 dir = "experiments/nat-behaviour"
 run = "swift run NATBehaviourSpike"
+
+[tasks.sample-time]
+description = "Check whether dropped audio buffers show up as sample-time jumps (needs a Mac)"
+dir = "experiments/sample-time-continuity"
+run = "swift run SampleTimeSpike"
