@@ -38,6 +38,11 @@ public enum StatusText {
     public static func detail(_ snapshot: LiveState.Snapshot, in stream: StreamKind) -> [String] {
         var lines: [String] = []
 
+        // **一度も観測していないなら、そこで止める。** 続く行は「無音」「異常なし」と
+        // 断定するが、それは測った結果ではない。許可が下りていない受信側と、
+        // 鳴っていないだけの受信側が、同じ文字列になる。
+        guard snapshot.hasObserved else { return ["まだ測れていない"] }
+
         if snapshot.meanDbfs > Levels.floorDbfs {
             lines.append(String(format: "レベル %.1f dBFS", snapshot.meanDbfs))
             lines.append(String(format: "ノイズフロア %.1f dBFS", snapshot.noiseFloorDbfs))
@@ -96,13 +101,42 @@ public enum StatusText {
     /// どちらのストリームの行かを示す見出し。**2本並べると、どちらの話か分からなくなる。**
     /// 同じ「音が小さい」でも、マイク側は自分の入力、受信側は聞こえの話である。
     ///
-    /// 文言は Info.plist の用途説明(「このMacで鳴っている音」)と揃える。ここだけ
-    /// 「システム音声」のような別の呼び方をすると、許可を求められた画面と結びつかない。
+    /// 呼び方は Info.plist の用途説明(「このMacで鳴っている音」)に寄せる。メニューの幅に
+    /// 合わせて短くしてあるので一字一句は同じでないが、**別の呼び方はしない。**
+    /// 「システム音声」などと書くと、許可を求められた画面と結びつかない。
     public static func streamLabel(_ stream: StreamKind) -> String {
         switch stream {
         case .mic: return "マイク"
         case .output: return "このMacの音"
         }
+    }
+
+    /// メニューに並べる1行。**何をどの順で出すかは表示の判断**なので、`MeerkatsCore` で決める。
+    /// `MenuBarController` は受け取った列を `NSMenuItem` に載せるだけにする。
+    /// AppKit を挟まないので、並びと見出しの出し分けをCIで確かめられる。
+    public enum MenuLine: Equatable {
+        case header(String)
+        case detail(String)
+        case separator
+    }
+
+    /// 観測している列からメニューの行を組み立てる。
+    ///
+    /// **1本のときは見出しを出さない。** 何の見出しかが自明で、行が増えるだけになる。
+    /// 2本以上のときは見出しを付け、続く行を字下げして、**間にだけ**区切りを入れる。
+    public static func menu(
+        for streams: [(kind: StreamKind, snapshot: LiveState.Snapshot)]
+    ) -> [MenuLine] {
+        let labelled = streams.count > 1
+        var lines: [MenuLine] = []
+        for (index, stream) in streams.enumerated() {
+            if labelled { lines.append(.header(streamLabel(stream.kind))) }
+            for line in detail(stream.snapshot, in: stream.kind) {
+                lines.append(.detail(labelled ? "  " + line : line))
+            }
+            if index < streams.count - 1 { lines.append(.separator) }
+        }
+        return lines
     }
 
     /// 通知の本文。何が起きているかと、次に何を見ればよいかを1行ずつ。

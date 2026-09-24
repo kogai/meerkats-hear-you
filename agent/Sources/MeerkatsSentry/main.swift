@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var sessionId: Int64 = 0
     private var micStreamId: Int64 = 0
+
+    /// 受信側のストリームID。**いまは読んでいない。** 分析ウインドウが1本ぶんしか
+    /// 読み口を持たないためで、2本を並べる ADR-0012 の突合で要る。
     private var outputStreamId: Int64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -36,7 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 「動いてはいるが測れていない」ことが表示から分かるようにするため。
         //
         // **2本とも先に出す。** 受信側は別の許可を要り、断られることがある。載せておけば、
-        // 断られた側は「入力なし」のまま並び、片方だけ測れていないことが見て分かる。
+        // 断られた側は「まだ測れていない」のまま並ぶ。**最初の1秒を観測するまでは両方が
+        // そう出る**ので、片方だけ測れていないと分かるのは、もう片方が数字を出してからになる。
         let menuBar = MenuBarController(streams: [
             .init(liveState: micLiveState, kind: micConfiguration.streamKind),
             .init(liveState: outputLiveState, kind: outputConfiguration.streamKind),
@@ -122,8 +126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 別に要り、断られることも、出力デバイスの都合で弾かれることもある。そこで記録全体を
     /// 止めると、**片方が取れないだけで両方失う。**
     ///
-    /// マイクより後に起こすのは、失敗しやすいほうを後ろに置くためである。先に起こすと、
-    /// こちらが投げた時点でマイク側の配線に入れない。
+    /// **分離を作っているのは、この関数が中で握りつぶしていることである。順序ではない。**
+    /// ここは投げないので、マイクより先に呼んでもマイク側の配線には入れる。`catch` を外すか
+    /// `throws` にすると、そこで分離が消える。
     private func startOutputTap(store: RecordingStore) {
         var startedStreamId: Int64 = 0
         let configuration = outputConfiguration
@@ -148,6 +153,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             outputTap = tap
             outputStreamId = startedStreamId
         } catch {
+            // **一度も書かれないストリームの行が残ることがある。** 工場は率が分かった段で
+            // 呼ばれ、そこで `addStream` が行を入れる。そのあとの `AudioDeviceStart` などで
+            // 落ちると行だけが残り、消す口は無い。マイク側(`AudioCapture`)と同じ形。
+            // **許可の拒否はその手前で落ちる**ので、いちばん多い失敗ではこうならない。
             report("このMacの音を記録できませんでした: \(error)")
         }
     }
@@ -158,8 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 決められない。48kHz と決め打って記録すると、44.1kHz の機械では嘘の値が残る。
     /// 記録に残す率と、実際に切り出す率が食い違えば、あとから見ても直しようがない。
     ///
-    /// `self` を捕まえないよう、要るものはすべて引数で受け取る。捕まえると、可変の
-    /// プロパティを音のスレッドから読むことになる。
+    /// `self` を捕まえないよう、要るものはすべて引数で受け取る。**この工場自体は音の
+    /// スレッドからは呼ばれない**(`start()` の中で同期に呼ばれる)。掴ませないのは、
+    /// 閉包が可変のプロパティを持ち続けないようにするためである。音のスレッドから呼ばれるのは
+    /// `onError` のほうで、そちらは `[weak self]` で持つ。
     private static func pipelineFactory(
         store: RecordingStore,
         sessionId: Int64,
@@ -186,7 +197,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pipeline = RecordingPipeline(
                 configuration: configuration, sink: sink, liveState: liveState, clock: clock
             )
-            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: configuration.streamKind) }
+            // **種別だけを写して渡す。** `configuration` は直前に `var` で作り直しており、
+            // 閉包が箱ごと掴むと、あとから書き換えが足されたときに音のスレッドがそれを読む。
+            let streamKind = configuration.streamKind
+            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: streamKind) }
             return pipeline
         }
     }

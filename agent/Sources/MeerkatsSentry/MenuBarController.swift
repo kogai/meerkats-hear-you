@@ -24,9 +24,11 @@ public final class MenuBarController {
     private let refreshInterval: TimeInterval
 
     /// - Parameter streams: 表示するストリーム。**先頭のものが題になる**(下記 `refresh`)。
+    ///   空では作れない。題に出すものが無くなり、幅ゼロの見えない項目になる。
     /// - Parameter refreshInterval: 表示の更新間隔。終日動き続けるので控えめにする。
     ///   ADR-0004で書き込み頻度を電力の観点で絞ったが、常時表示はそこに別の消費を足す。
     public init(streams: [Stream], refreshInterval: TimeInterval = 1.0) {
+        precondition(!streams.isEmpty, "表示するストリームが要る")
         self.streams = streams
         self.refreshInterval = refreshInterval
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -60,32 +62,22 @@ public final class MenuBarController {
         // **題に出すのは先頭の1本だけ。** メニューバーの幅は限られていて、2本ぶんの
         // 記号とレベルを並べると読み取れない。受信側に異常が出たときは、通知
         // (`AnomalyNotifier`)とメニューの中に出る。
-        if let first = readings.first {
-            statusItem.button?.title = StatusText.menuBarTitle(first.snapshot)
-        }
-        rebuildMenu(readings)
+        statusItem.button?.title = StatusText.menuBarTitle(readings[0].snapshot)
+        rebuildMenu(StatusText.menu(for: readings))
     }
 
-    private func rebuildMenu(_ readings: [(kind: StreamKind, snapshot: LiveState.Snapshot)]) {
+    /// **並びは `StatusText` が決める。** ここは受け取った行を載せるだけで、判断を持たない。
+    private func rebuildMenu(_ lines: [StatusText.MenuLine]) {
         let menu = NSMenu()
-        let labelled = readings.count > 1
-        for (index, reading) in readings.enumerated() {
-            // **1本のときは見出しを出さない。** 何の見出しかが自明で、行が増えるだけになる。
-            if labelled {
-                let header = NSMenuItem(
-                    title: StatusText.streamLabel(reading.kind), action: nil, keyEquivalent: ""
-                )
-                header.isEnabled = false
-                menu.addItem(header)
-            }
-            for line in StatusText.detail(reading.snapshot, in: reading.kind) {
-                let item = NSMenuItem(
-                    title: labelled ? "  " + line : line, action: nil, keyEquivalent: ""
-                )
+        for line in lines {
+            switch line {
+            case .header(let text), .detail(let text):
+                let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 menu.addItem(item)
+            case .separator:
+                menu.addItem(.separator())
             }
-            if index < readings.count - 1 { menu.addItem(.separator()) }
         }
         menu.addItem(.separator())
 

@@ -6,15 +6,48 @@ final class StatusTextTests: XCTestCase {
         mean: Double = -25,
         speaking: Bool = true,
         floor: Double = -60,
-        anomalies: Set<AnomalyKind> = []
+        anomalies: Set<AnomalyKind> = [],
+        observed: Bool = true
     ) -> LiveState.Snapshot {
         LiveState.Snapshot(
             meanDbfs: mean,
             isSpeaking: speaking,
             noiseFloorDbfs: floor,
             activeAnomalies: anomalies,
-            recentLevels: []
+            recentLevels: [],
+            hasObserved: observed
         )
+    }
+
+    /// **観測していないストリームについて断定しない。** 受信側の許可が下りていないときと、
+    /// 鳴っていないだけのときが、同じ文字列になってはいけない。
+    func testUnobservedStreamSaysNothingElse() {
+        let lines = StatusText.detail(snapshot(observed: false), in: .output)
+        XCTAssertEqual(lines, ["まだ測れていない"])
+        // 下限に張り付いた「入力なし」と、測れていないことを混ぜない。
+        XCTAssertEqual(
+            StatusText.detail(snapshot(mean: Levels.floorDbfs, observed: true), in: .output).first,
+            "入力なし"
+        )
+    }
+
+    func testMenuLabelsStreamsOnlyWhenMoreThanOne() {
+        let single = StatusText.menu(for: [(kind: .mic, snapshot: snapshot())])
+        XCTAssertFalse(single.contains { if case .header = $0 { return true } else { return false } })
+        XCTAssertFalse(single.contains { if case .separator = $0 { return true } else { return false } })
+        XCTAssertFalse(
+            single.contains { if case .detail(let t) = $0 { return t.hasPrefix("  ") } else { return false } }
+        )
+
+        let pair = StatusText.menu(for: [
+            (kind: .mic, snapshot: snapshot()),
+            (kind: .output, snapshot: snapshot(observed: false)),
+        ])
+        XCTAssertEqual(pair.first, .header("マイク"))
+        XCTAssertEqual(pair.last, .detail("  まだ測れていない"))
+        // 区切りは**間にだけ**。末尾に付けると、下の「記録を見る…」との間で二重になる。
+        XCTAssertEqual(pair.filter { $0 == .separator }.count, 1)
+        XCTAssertTrue(pair.contains(.header("このMacの音")))
     }
 
     func testStreamLabelsAreDistinct() {
