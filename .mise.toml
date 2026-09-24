@@ -27,3 +27,8 @@ run = "python3 xcorr-alignment-resolution.py"
 description = "Build a signed .app without Xcode and check it can hold mic permission"
 dir = "experiments/macos-app-bundle-spike"
 run = "./run.sh"
+
+[tasks.sample-time]
+description = "Check whether dropped audio buffers show up as sample-time jumps (needs a Mac)"
+dir = "experiments/sample-time-continuity"
+run = "swift run SampleTimeSpike"
