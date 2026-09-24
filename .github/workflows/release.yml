@@ -9,18 +9,22 @@ name: release
 # paths を足すとタグ側にも同じ条件がかかるため。agent/ を触らないコミットにタグを打った瞬間に
 # リリースが出なくなる。main での数分の無駄より、タグが黙って効かないほうが高くつく。
 #
-# pull_request でも公開以外の全段を通す。キーチェーンの取り込みや universal の表明は
-# ここにしか無く、タグを打つまで一度も動かないままだと、リリースを切ろうとした瞬間に
-# 壊れていることが分かる。pull_request のフィルタは push と独立しているので paths を付けられる。
+# **pull_request では走らせない。** 以前は「キーチェーンの取り込みや universal の表明が
+# ここにしか無く、タグを打つまで一度も動かないままだと、リリースを切ろうとした瞬間に壊れて
+# いることが分かる」という理由で回していた。**この理由は成り立っていなかった。**
+# 公開(Release を公開の段)だけがタグ限定で、それ以外の段は main への push でも走る。
+# つまりPRを外しても「タグまで一度も動かない」状態には戻らず、壊れていると分かる時点が
+# マージ前からマージ直後の main へ動くだけである。
+#
+# 代償に対して費用が大きい。universal は arm64 と x86_64 を別々にビルドするので、
+# 1本あたり25分前後かかる。PRの側は agent ワークフローが `swift build` / `swift test` /
+# バンドルの組み立て / ad-hoc署名 / Info.plist の検査まで見るので、コンパイルとテストは
+# マージ前に通っている。PRで増える情報は universal と署名証明書の取り込みだけになる。
 
 on:
   push:
     branches: [main]
     tags: ['v*']
-  pull_request:
-    paths:
-      - 'agent/**'
-      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
