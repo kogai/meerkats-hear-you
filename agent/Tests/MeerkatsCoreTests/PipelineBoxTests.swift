@@ -6,6 +6,7 @@ private final class CountingSink: RecordingPipeline.Sink {
     func write(seconds records: [SecondRecord]) throws {}
     func write(detail: DetailWindow) throws {}
     func write(anchor: ClockAnchor) throws {}
+    func write(gap: RecordingGap) throws {}
 }
 
 final class PipelineBoxTests: XCTestCase {
@@ -17,7 +18,8 @@ final class PipelineBoxTests: XCTestCase {
         )
         let liveState = LiveState()
         let pipeline = RecordingPipeline(
-            configuration: configuration, sink: CountingSink(), liveState: liveState
+            configuration: configuration, sink: CountingSink(), liveState: liveState,
+            clock: FakeClock()
         )
         return (PipelineBox(pipeline), liveState)
     }

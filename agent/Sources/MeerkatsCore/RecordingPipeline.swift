@@ -44,6 +44,7 @@ public final class RecordingPipeline {
         func write(seconds: [SecondRecord]) throws
         func write(detail: DetailWindow) throws
         func write(anchor: ClockAnchor) throws
+        func write(gap: RecordingGap) throws
     }
 
     public let configuration: Configuration
@@ -51,6 +52,11 @@ public final class RecordingPipeline {
     /// 記録が静かに落ちる。パイプラインを指し返す出力先は無いので、循環はしない。
     private let sink: Sink
     private let liveState: LiveState
+
+    /// **セッションで1つの時計を共有する**(ADR-0015 決定6)。既定値を置かないのは、
+    /// 置くとパイプラインごとに別の時計が生まれ、2本のストリームが別の原点を持つためである。
+    /// それは ADR-0015 が直そうとしている状態そのものになる。
+    private let clock: MonotonicClock
 
     private var framer: Framer
     private var detector: SpeechDetector
@@ -60,7 +66,17 @@ public final class RecordingPipeline {
     private var anchors: AnchorScheduler
 
     private var pendingSeconds: [SecondRecord] = []
+
+    /// 時刻は `baseUs + frameIndex * frameDurationUs`(ADR-0015 決定1)。
+    /// キャプチャが続いている間はフレーム数だけで決まるので、バッファの到着ジッタが入らない。
+    private var baseUs: Int64 = 0
     private var frameIndex: Int64 = 0
+    private var started = false
+    private var pendingRebase: RecordingGap.Reason?
+
+    /// 直前のバッファが届いたときの時計の読み。**空隙の長さはここからの差で測る。**
+    /// フレーム時刻の差で測ると、公称レートと実クロックのずれぶん短く出る。
+    private var lastIngestClockUs: Int64?
 
     /// 異常に入った瞬間に呼ばれる。通知の送出に使う(ADR-0005)。
     public var onAnomaly: ((AnomalyKind) -> Void)?
@@ -68,11 +84,13 @@ public final class RecordingPipeline {
     public init(
         configuration: Configuration = Configuration(),
         sink: Sink,
-        liveState: LiveState
+        liveState: LiveState,
+        clock: MonotonicClock
     ) {
         self.configuration = configuration
         self.sink = sink
         self.liveState = liveState
+        self.clock = clock
 
         framer = Framer(frameLength: configuration.frameLength)
         detector = SpeechDetector()
@@ -89,15 +107,108 @@ public final class RecordingPipeline {
     /// - Parameters:
     ///   - wallUs: いまの実時刻。アンカーを打つのに使う。
     public func ingest(_ samples: [Float], wallUs: Int64) throws {
+        // 最初のバッファは必ず打ち直す。セッションの開始からキャプチャが実際に始まるまでの
+        // 時間(エンジンの起動、タップの確立、許可の応答)はストリームごとに違う。
+        // そこを 0 に揃えると、実際にはずれて始まった2本を「同時に始まった」と記録する。
+        let reason: RecordingGap.Reason? = started ? pendingRebase : .start
+        if let reason {
+            try applyRebase(reason: reason)
+        }
+        // **打ち直しのあとで更新する。** 先に更新すると、打ち直しが測る差が0になる。
+        lastIngestClockUs = clock.nowUs()
         for frame in framer.push(samples) {
             try process(frame: frame, wallUs: wallUs)
         }
     }
 
+    /// 途切れたと分かったときに呼ぶ(ADR-0015 決定2)。
+    ///
+    /// **ここでは時計を読まない。次のバッファまで待つ。** ここで読むと、
+    /// 呼ばれてから音が実際に戻るまでの間も新しい基準に含まれてしまい、
+    /// 最初のフレームが、まだ捕まえていない時刻を名乗ることになる。
+    /// 空隙が終わるのは、こちらが気づいた時ではなく、音が戻った時である。
+    ///
+    /// 次のバッファが来なければ何も起きない。打ち直しも空隙の行も出ない。
+    /// **それでよい。** 戻ってこなかったキャプチャは、締めるときに端数として締まる。
+    public func rebase(reason: RecordingGap.Reason) {
+        pendingRebase = reason
+    }
+
+    private func applyRebase(reason: RecordingGap.Reason) throws {
+        // **空隙の長さは時計で測る。フレーム時刻の差では測らない。**
+        //
+        // フレーム時刻は公称レートから作るので、デバイスのクロックとのずれぶん、
+        // 実時間から離れていく。その差を空隙の計算に混ぜると、離れた量だけ空隙が
+        // 短く出る。100ppm・8時間なら 2.88秒ぶん——**それより短い取りこぼしは
+        // まるごと消える。** ADR-0015 が閾値方式を退けたのと同じ壊れ方になる。
+        //
+        // 直前のバッファが**届いた**時計の読みからの差なら、ずれは入らない。
+        //
+        // 代わりに、**1バッファぶん(約100ms)長く出る。** 打ち直し後の最初のバッファは、
+        // 届く前に捕まえた音を運んでくるので、その音の頭は届いた時刻より前にある。
+        // それを届いた時刻に置くぶん、空隙がバッファ1つぶん長くなる。
+        // **長い側に外しておく。** 短い側に外すと、取りこぼしを呑むことになる。
+        let measuredGapUs = lastIngestClockUs.map { clock.nowUs() - $0 } ?? clock.nowUs()
+
+        // 直前のフレームの終わり。`frameIndex` は次に書くフレームを指しているので、
+        // これがそのまま「ここまでは記録した」の境になる。
+        let startUs = started ? baseUs + frameIndex * configuration.frameDurationUs : 0
+        let newBaseUs = startUs + max(measuredGapUs, 0)
+
+        // **先に残す。書けなければ基準を動かさない。**
+        // 先に動かすと、書き込みが投げたときに時系列だけ飛んで空隙の行が無い記録になる。
+        // そうなると、あとから見て「なぜここで時刻が飛んでいるのか」を知る手がかりが
+        // どこにも残らない。投げたままなら、次のバッファでもう一度試せる。
+        try sink.write(gap: RecordingGap(startUs: startUs, endUs: newBaseUs, reason: reason))
+
+        // **途中の状態を捨てる**(ADR-0015 決定4)。捨てないと、欠落の前と後が混ざる。
+        //
+        // 端数の秒はここで吐き出す。混ざると、前の30フレームと後の20フレームで1行が
+        // 完成し、`monotonicUs` は欠落前を指し、`frameCount` は 50 になる。主キーは
+        // 衝突せず、1秒に満たない行にもならない。**完全に見える嘘の行**になる。
+        try appendPending(aggregator.flush())
+        framer.reset()
+        detector.reset()
+
+        // **詳細層のリングも捨てる。** ここがいちばん静かに壊れる。
+        // `DetailFrameCodec` はフレームごとの時刻を書かず、`startUs` からの等間隔で
+        // 復元する。欠落をまたいだ500フレームを1つの窓に入れると、読み戻したときに
+        // **20分の穴が消えて、10秒に等間隔で並ぶ。** 常時層と違って `frameCount` にも
+        // 異常が出ないので、あとから気づく手がかりが1つも残らない。
+        ring.removeAll()
+
+        // **異常の継続も捨てる。** `sustainedSeconds` は「続いたこと」を見るので、
+        // 欠落をまたいで数えが繋がると、続いていないものを続いたと言って通知する。
+        anomalies.reset()
+
+        baseUs = newBaseUs
+        frameIndex = 0
+        started = true
+        pendingRebase = nil
+    }
+
+    /// 常時層に1件積む。**区切りの判定はここに置く。**
+    ///
+    /// `complete(second:)` の中だけに置くと、打ち直しが吐き出す端数の秒が判定を通らない。
+    /// 1秒より短い間隔で打ち直しが続けば `complete` は一度も呼ばれず、
+    /// **溜まったまま1行もディスクに出ない。**
+    private func appendPending(_ record: SecondRecord?) throws {
+        guard let record else { return }
+        // 区切りは、溜まっている先頭からの経過で決める。書いたあとの時刻を基準にすると、
+        // 最初のひと塊だけ1件多くなる。件数が揃わないと、溜まる量の見積もりが立たない。
+        let flushIntervalUs = Int64(configuration.flushIntervalSeconds) * 1_000_000
+        if let start = pendingSeconds.first?.monotonicUs,
+           record.monotonicUs - start >= flushIntervalUs {
+            try flush()
+        }
+        pendingSeconds.append(record)
+    }
+
     private func process(frame: [Float], wallUs: Int64) throws {
-        // 時刻はフレーム番号から決める。処理時刻を読むと、1バッファぶんのフレームが
-        // ほぼ同じ時刻になってしまい、レベルの時系列として使えない。
-        let monotonicUs = frameIndex * configuration.frameDurationUs
+        // 時刻は基準からのフレーム番号で決める。ここで時計を読むと、1バッファぶんの
+        // フレームがほぼ同じ時刻になってしまい、レベルの時系列として使えない。
+        // 基準が動くのは打ち直しのときだけである(ADR-0015 決定1)。
+        let monotonicUs = baseUs + frameIndex * configuration.frameDurationUs
         frameIndex += 1
 
         let dbfs = Levels.rmsDbfs(frame)
@@ -118,14 +229,7 @@ public final class RecordingPipeline {
     }
 
     private func complete(second record: SecondRecord) throws {
-        // 区切りは、溜まっている先頭からの経過で決める。書いたあとの時刻を基準にすると、
-        // 最初のひと塊だけ1件多くなる。件数が揃わないと、溜まる量の見積もりが立たない。
-        let flushIntervalUs = Int64(configuration.flushIntervalSeconds) * 1_000_000
-        if let start = pendingSeconds.first?.monotonicUs,
-           record.monotonicUs - start >= flushIntervalUs {
-            try flush()
-        }
-        pendingSeconds.append(record)
+        try appendPending(record)
 
         let entered = anomalies.push(record, noiseFloorDbfs: detector.noiseFloorDbfs)
         liveState.update(
@@ -158,9 +262,7 @@ public final class RecordingPipeline {
 
     /// 端数のフレームも含めて締める。
     public func finish() throws {
-        if let last = aggregator.flush() {
-            pendingSeconds.append(last)
-        }
+        try appendPending(aggregator.flush())
         try flush()
     }
 }
