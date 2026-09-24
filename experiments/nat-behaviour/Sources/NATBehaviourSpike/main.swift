@@ -203,6 +203,18 @@ func heading(_ text: String) {
     print("\n\(text)\n" + String(repeating: "-", count: 60))
 }
 
+/// **公開アドレスは既定で伏せる。** このリポジトリは公開で、しかもこのスパイクは
+/// 出力を PR に貼ってもらう前提で作ってある。グローバルアドレスは回線と個人を
+/// 結びつける値なので、既定で出すと**貼った時点で公開される。**
+///
+/// 判定はどれもアドレスではなくポートの一致・不一致で決まるので、伏せても読める。
+/// 手元で確かめたいときは `SHOW_ADDRESS=1` を付ける。
+let showAddress = ProcessInfo.processInfo.environment["SHOW_ADDRESS"] == "1"
+
+func display(_ reflexive: Reflexive) -> String {
+    showAddress ? "\(reflexive.address):\(reflexive.port)" : "(伏せた):\(reflexive.port)"
+}
+
 /// 応答が無いことは**測定の結果**なので、失敗として投げずに nil で返す。
 /// 壊れた応答のほうは投げる。この2つを混ぜると、サーバ1台の不調を
 /// 「この回線では STUN が通らない」と読むことになる。
@@ -256,7 +268,10 @@ do {
     }
     let primary = answered.entry
     let viaPrimary = answered.reflexive
-    print("  公開アドレス: \(viaPrimary.address):\(viaPrimary.port)  (自分側のポート \(firstLocal))")
+    print("  公開アドレス: \(display(viaPrimary))  (自分側のポート \(firstLocal))")
+    if !showAddress {
+        print("  (アドレスは伏せてあります。判定はポートで付きます。見るなら SHOW_ADDRESS=1)")
+    }
 
     if let routed = routedLocalAddress(to: primary.addr), routed == viaPrimary.address {
         print("  ⚠ 反射アドレスが自分のアドレスと同じ。**この機械は NAT の内側に居ない。**")
@@ -268,8 +283,13 @@ do {
     // 2台と数えると、EDM でも同じポートが返り、EIM と読める。
     let others = resolved.filter { $0.addr.sin_addr.s_addr != primary.addr.sin_addr.s_addr }
     if let secondary = others.first, let viaSecondary = try queryOrNil(first, secondary) {
-        print("  \(primary.server.label) 経由: \(viaPrimary.address):\(viaPrimary.port)")
-        print("  \(secondary.server.label) 経由: \(viaSecondary.address):\(viaSecondary.port)")
+        print("  \(primary.server.label) 経由: \(display(viaPrimary))")
+        print("  \(secondary.server.label) 経由: \(display(viaSecondary))")
+        // アドレスを伏せる以上、アドレスが割れていないことは別に言う必要がある。
+        // 出口が複数あると、ポートが同じでもアドレスが違うことがありうる。
+        if !showAddress && viaPrimary.address != viaSecondary.address {
+            print("  **宛先ごとにアドレスまで違う。** 出口が1つではない。")
+        }
         if viaPrimary == viaSecondary {
             print("  → **宛先によらない (EIM)。** 穴あけが成立する側。")
         } else {
@@ -321,16 +341,17 @@ do {
         let silent = Date().timeIntervalSince(probe.since)
         let after = try? query(probe.fd, primary.addr, primary.server.label)
         let alive = after == probe.before
-        let shown = after.map { "\($0.address):\($0.port)" } ?? "応答なし"
+        let shown = after.map { display($0) } ?? "応答なし"
         print(
             "  沈黙 \(String(format: "%.1f", silent))秒 (狙い \(probe.wait)秒): "
-                + "\(probe.before.address):\(probe.before.port) → \(shown)  "
+                + "\(display(probe.before)) → \(shown)  "
                 + (alive ? "生きている" : "**切れた**")
         )
         Darwin.close(probe.fd)
     }
     Darwin.close(first)
-    print("\n完了。この出力をそのまま PR に貼ってください。")
+    print("\n完了。この出力をそのまま PR に貼って構いません"
+        + (showAddress ? "——が、SHOW_ADDRESS=1 なので公開アドレスが載っています。" : "。公開アドレスは伏せてあります。"))
 } catch {
     print("失敗: \(error)")
     exit(1)
