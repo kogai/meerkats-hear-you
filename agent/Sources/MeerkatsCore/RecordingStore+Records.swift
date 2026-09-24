@@ -139,6 +139,10 @@ extension RecordingStore {
         defer { connectionLock.unlock() }
         guard !records.isEmpty else { return }
 
+        // **`BEGIN` と `COMMIT` を同じ `do` に入れる。** `COMMIT` を外に出すと、それが
+        // 失敗したときにトランザクションが開いたまま残る。次の `appendSeconds` は入れ子の
+        // `BEGIN` で落ち、その次も落ちる。**戻る道が無く、以後このセッションは1行も
+        // 書けなくなる。**
         try exec("BEGIN;")
         do {
             let statement = try prepare(
@@ -163,11 +167,11 @@ extension RecordingStore {
                 sqlite3_bind_int64(statement, 8, Int64(record.frameCount))
                 try step(statement)
             }
+            try exec("COMMIT;")
         } catch {
             try? exec("ROLLBACK;")
             throw error
         }
-        try exec("COMMIT;")
     }
 
     public func appendDetailWindow(streamId: Int64, _ window: DetailWindow) throws {

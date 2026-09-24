@@ -28,12 +28,14 @@ public enum StreamKind: String {
 public final class RecordingStore {
     private var db: OpaquePointer?
 
-    /// **接続を叩くスレッドが2本ある。** マイクのタップと、受信音声のIOブロック
-    /// (ADR-0008)。`SQLITE_OPEN_FULLMUTEX` は呼び出し1つずつを直列にするだけで、
+    /// **受信音声(ADR-0008)を起こすと、接続を叩くスレッドが2本になる。** マイクのタップと、
+    /// 受信側のIOブロックである。`SQLITE_OPEN_FULLMUTEX` は呼び出し1つずつを直列にするだけで、
     /// **呼び出しをまたぐ対を守らない。** 守れていないものが2つある。
     ///
-    /// - `appendSeconds` の `BEGIN` と `COMMIT` の対。割り込まれると、入れ子の `BEGIN` で
-    ///   失敗するか、**他方のトランザクションを締める**
+    /// - `appendSeconds` の `BEGIN` と `COMMIT` の対。割り込まれた側は入れ子の `BEGIN` で
+    ///   投げ、**その25秒ぶんが書かれないまま落ちる。** さらに、トランザクションが開いている間に
+    ///   もう片方が `appendGap` などの単文を書くと、**それは相手のトランザクションに乗る。**
+    ///   相手が `ROLLBACK` すれば一緒に消える
     /// - `addStream` の挿入と `sqlite3_last_insert_rowid` の対。間に別スレッドの挿入が入ると、
     ///   **別の行のIDを自分のストリームIDとして持つ。** 以後その記録は別のストリームに付く
     ///

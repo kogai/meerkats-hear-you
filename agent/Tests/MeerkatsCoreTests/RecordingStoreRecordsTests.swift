@@ -37,9 +37,15 @@ final class RecordingStoreRecordsTests: XCTestCase {
     /// **2本のストリームが同時に書く。** 受信音声(ADR-0008)を起こすと、マイクのタップと
     /// Core Audio のIOブロックの2本がこの接続を叩く。
     ///
-    /// 接続を直列にしていないと、`appendSeconds` の `BEGIN`/`COMMIT` が入れ子になって
-    /// 落ちるか、**他方のトランザクションを締める。** `SQLITE_OPEN_FULLMUTEX` は
-    /// 呼び出し1つずつしか直列にしないので、そこは守られない。
+    /// 接続を直列にしていないと、割り込まれた側が入れ子の `BEGIN` で投げ、**そのバッチが
+    /// 書かれないまま落ちる。** `SQLITE_OPEN_FULLMUTEX` は呼び出し1つずつしか直列にしない。
+    ///
+    /// **このテストが見ているのはそこまでである。** 2つ断っておく。
+    ///
+    /// - `DispatchQueue.concurrentPerform` は**並行に走ることを保証しない。** 逐次に回れば、
+    ///   錠を外しても緑になる。「錠が無いと必ず落ちる」ことは固定できていない
+    /// - `addStream` と `sqlite3_last_insert_rowid` の対は**覆っていない。** 錠のもう1つの
+    ///   動機はそちらで、被害は静か(記録がまるごと別のストリームに付く)なぶん重い
     func testConcurrentWritersFromTwoStreams() throws {
         let otherStreamId = try store.addStream(
             sessionId: sessionId, kind: .output, deviceName: nil, sampleRate: 48_000, frameMs: 20
