@@ -102,8 +102,6 @@ extension RecordingStore {
     }
 
     public func gaps(streamId: Int64) throws -> [RecordingGap] {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT start_us, end_us, reason FROM gaps
@@ -198,8 +196,6 @@ extension RecordingStore {
     public func seconds(streamId: Int64, fromUs: Int64 = .min, toUs: Int64 = .max) throws
         -> [SecondRecord]
     {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT monotonic_us, mean_dbfs, min_dbfs, max_dbfs, speech_ratio, clip_ratio,
@@ -234,8 +230,6 @@ extension RecordingStore {
     /// **読んだ時点でストリームに縛る。** 素の配列で返すと、2本ぶんを繋げた配列も、
     /// 片方のIDで引いた配列も、換算に渡せてしまう(`StreamAnchors` 参照)。
     public func anchors(streamId: Int64) throws -> StreamAnchors {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT monotonic_us, wall_us FROM clock_anchors
@@ -258,8 +252,6 @@ extension RecordingStore {
     }
 
     public func detailWindows(streamId: Int64, frameDurationUs: Int64) throws -> [DetailWindow] {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT start_us, trigger, frames FROM detail_windows
