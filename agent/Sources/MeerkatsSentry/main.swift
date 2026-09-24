@@ -9,9 +9,14 @@ import MeerkatsCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: RecordingStore?
     private var capture: AudioCapture?
+    private var outputTap: SystemOutputTap?
     private var menuBar: MenuBarController?
     private var analysis: AnalysisWindowController?
-    private let liveState = LiveState()
+
+    /// **ストリームごとに分ける。** 1つを2本で共有すると、あとから来たほうの値で
+    /// 上書きし合い、表示はどちらのものとも言えない数字になる。
+    private let micLiveState = LiveState()
+    private let outputLiveState = LiveState()
 
     /// **セッションで1つ。** 2本のパイプラインに同じものを渡す(ADR-0015 決定6)。
     /// ここに置いてあるのは、別々に作った瞬間に2本が別の原点を持つからである。
@@ -19,19 +24,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 記録の設定。**ストリーム種別を決めている唯一の場所にする。**
     /// 表示は記録より先に立ち上がるので、ここに置かないとメニューバーだけ別の値を持つ。
-    /// 受信音声を足すときに、文言だけ取り残されるのがその形になる。
-    private let configuration = RecordingPipeline.Configuration()
+    private let micConfiguration = RecordingPipeline.Configuration(streamKind: .mic)
+    private let outputConfiguration = RecordingPipeline.Configuration(streamKind: .output)
 
     private var sessionId: Int64 = 0
-    private var streamId: Int64 = 0
+    private var micStreamId: Int64 = 0
+    private var outputStreamId: Int64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 記録より先に出す。許可が下りずに記録が始まらなくても、
         // 「動いてはいるが測れていない」ことが表示から分かるようにするため。
-        // liveState はマイク側1本ぶん。受信音声を足すときは、LiveStateごと分ける。
-        let menuBar = MenuBarController(
-            liveState: liveState, streamKind: configuration.streamKind
-        )
+        //
+        // **2本とも先に出す。** 受信側は別の許可を要り、断られることがある。載せておけば、
+        // 断られた側は「入力なし」のまま並び、片方だけ測れていないことが見て分かる。
+        let menuBar = MenuBarController(streams: [
+            .init(liveState: micLiveState, kind: micConfiguration.streamKind),
+            .init(liveState: outputLiveState, kind: outputConfiguration.streamKind),
+        ])
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.start()
         self.menuBar = menuBar
@@ -41,7 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // 締めてから閉じる。端数の1秒と溜まっている常時層はここでしか書かれない。
+        // **2本とも締める。** 片方だけ締めると、もう片方の端数がそのまま消える。
         capture?.stop()
+        outputTap?.stop()
         if sessionId != 0 {
             try? store?.endSession(id: sessionId, wallUs: Self.nowWallUs())
         }
@@ -61,67 +72,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = try RecordingStore(path: Self.databasePath())
             self.store = store
 
-            // onAnomaly は逃げる閉包なので、プロパティを直接参照すると self の明示を要る。
-            // 値型なのでここで写しておけば済む。
-            let configuration = self.configuration
-
             sessionId = try store.startSession(
                 wallUs: Self.nowWallUs(), agentVersion: Self.version
             )
 
-            // **率が分かるまでストリームを作らない。** 入力デバイスの率はこちらから決められず、
-            // 48kHz と決め打って記録すると、44.1kHz の機械では嘘の値が残る。記録に残す率と、
-            // 実際に切り出す率が食い違えば、あとから見ても直しようがない。
-            let currentSessionId = self.sessionId
-            let liveState = self.liveState
-            // 時計も写しておく。プロパティのまま参照すると閉包が self を掴む。
-            // 参照型なので、写しても指す先はセッションで1つのままである。
-            let clock = self.clock
             var startedStreamId: Int64 = 0
-
+            let configuration = micConfiguration
             let capture = AudioCapture(
                 frameMs: configuration.frameMs,
-                makePipeline: { sampleRate in
-                    var configuration = configuration
-                    configuration.sampleRate = sampleRate
-
-                    let streamId = try store.addStream(
-                        sessionId: currentSessionId,
-                        kind: configuration.streamKind,
-                        deviceName: AudioCapture.currentInputDeviceName(),
-                        sampleRate: Int(sampleRate),
-                        frameMs: configuration.frameMs
-                    )
-                    startedStreamId = streamId
-
-                    let sink = StoreSink(store: store, streamId: streamId)
-                    let pipeline = RecordingPipeline(
-                        configuration: configuration, sink: sink, liveState: liveState,
-                        clock: clock
-                    )
-                    pipeline.onAnomaly = {
-                        AnomalyNotifier.notify($0, in: configuration.streamKind)
-                    }
-                    return pipeline
-                },
+                makePipeline: Self.pipelineFactory(
+                    store: store,
+                    sessionId: sessionId,
+                    configuration: configuration,
+                    liveState: micLiveState,
+                    clock: clock,
+                    deviceName: { AudioCapture.currentInputDeviceName() },
+                    onStream: { startedStreamId = $0 }
+                ),
                 onError: { [weak self] error in self?.report("\(error)") }
             )
             // 工場は start の中で同期に呼ばれる。戻ったときには streamId が決まっている。
             try capture.start()
             self.capture = capture
-            self.streamId = startedStreamId
+            self.micStreamId = startedStreamId
 
             // 記録が始まってから開けるようにする。ストリームIDが決まる前に開くと、
             // 空のウインドウが出て「記録されていない」と誤解させる。
+            //
+            // **このウインドウはまだマイク側しか見せない。** 受信側の行はDBに入るが、
+            // 読み口が1本ぶんしかない。2本を並べる作業は突合(ADR-0012)と同じ形になるので、
+            // そちらでまとめて扱う。
             analysis = AnalysisWindowController(
                 store: store,
-                streamId: streamId,
+                streamId: micStreamId,
                 streamKind: configuration.streamKind,
                 frameDurationUs: configuration.frameDurationUs
             )
             menuBar?.onOpenAnalysis = { [weak self] in self?.analysis?.show() }
+
+            startOutputTap(store: store)
         } catch {
             report("記録を開始できませんでした: \(error)")
+        }
+    }
+
+    /// 受信音声を起こす(ADR-0008、ADR-0013)。
+    ///
+    /// **失敗してもマイク側は続ける。** こちらは `NSAudioCaptureUsageDescription` の許可を
+    /// 別に要り、断られることも、出力デバイスの都合で弾かれることもある。そこで記録全体を
+    /// 止めると、**片方が取れないだけで両方失う。**
+    ///
+    /// マイクより後に起こすのは、失敗しやすいほうを後ろに置くためである。先に起こすと、
+    /// こちらが投げた時点でマイク側の配線に入れない。
+    private func startOutputTap(store: RecordingStore) {
+        var startedStreamId: Int64 = 0
+        let configuration = outputConfiguration
+        let tap = SystemOutputTap(
+            frameMs: configuration.frameMs,
+            makePipeline: Self.pipelineFactory(
+                store: store,
+                sessionId: sessionId,
+                configuration: configuration,
+                liveState: outputLiveState,
+                clock: clock,
+                // **デバイス名を残さない。** プロセスタップが拾うのはこのMacの出力そのもので、
+                // 利用者が選んだ機器ではない(ADR-0013)。入力側の値をここに写すと、
+                // 記録に嘘の条件が残る。
+                deviceName: { nil },
+                onStream: { startedStreamId = $0 }
+            ),
+            onError: { [weak self] error in self?.report("\(error)") }
+        )
+        do {
+            try tap.start()
+            outputTap = tap
+            outputStreamId = startedStreamId
+        } catch {
+            report("このMacの音を記録できませんでした: \(error)")
+        }
+    }
+
+    /// 2本のストリームで同じ工場を使う。**片方だけ直すと、2つの経路で理由の違う実装が並ぶ。**
+    ///
+    /// **率が分かるまでストリームを作らない。** 率はデバイスの既定に従い、こちらから
+    /// 決められない。48kHz と決め打って記録すると、44.1kHz の機械では嘘の値が残る。
+    /// 記録に残す率と、実際に切り出す率が食い違えば、あとから見ても直しようがない。
+    ///
+    /// `self` を捕まえないよう、要るものはすべて引数で受け取る。捕まえると、可変の
+    /// プロパティを音のスレッドから読むことになる。
+    private static func pipelineFactory(
+        store: RecordingStore,
+        sessionId: Int64,
+        configuration: RecordingPipeline.Configuration,
+        liveState: LiveState,
+        clock: MonotonicClock,
+        deviceName: @escaping () -> String?,
+        onStream: @escaping (Int64) -> Void
+    ) -> (Double) throws -> RecordingPipeline {
+        return { sampleRate in
+            var configuration = configuration
+            configuration.sampleRate = sampleRate
+
+            let streamId = try store.addStream(
+                sessionId: sessionId,
+                kind: configuration.streamKind,
+                deviceName: deviceName(),
+                sampleRate: Int(sampleRate),
+                frameMs: configuration.frameMs
+            )
+            onStream(streamId)
+
+            let sink = StoreSink(store: store, streamId: streamId)
+            let pipeline = RecordingPipeline(
+                configuration: configuration, sink: sink, liveState: liveState, clock: clock
+            )
+            pipeline.onAnomaly = { AnomalyNotifier.notify($0, in: configuration.streamKind) }
+            return pipeline
         }
     }
 

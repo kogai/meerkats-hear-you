@@ -93,6 +93,18 @@ public enum StatusText {
         }
     }
 
+    /// どちらのストリームの行かを示す見出し。**2本並べると、どちらの話か分からなくなる。**
+    /// 同じ「音が小さい」でも、マイク側は自分の入力、受信側は聞こえの話である。
+    ///
+    /// 文言は Info.plist の用途説明(「このMacで鳴っている音」)と揃える。ここだけ
+    /// 「システム音声」のような別の呼び方をすると、許可を求められた画面と結びつかない。
+    public static func streamLabel(_ stream: StreamKind) -> String {
+        switch stream {
+        case .mic: return "マイク"
+        case .output: return "このMacの音"
+        }
+    }
+
     /// 通知の本文。何が起きているかと、次に何を見ればよいかを1行ずつ。
     public static func notificationBody(for anomaly: AnomalyKind, in stream: StreamKind) -> String {
         description(of: anomaly, in: stream)

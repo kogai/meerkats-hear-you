@@ -17,6 +17,12 @@ final class StatusTextTests: XCTestCase {
         )
     }
 
+    func testStreamLabelsAreDistinct() {
+        XCTAssertEqual(StatusText.streamLabel(.mic), "マイク")
+        XCTAssertEqual(StatusText.streamLabel(.output), "このMacの音")
+        XCTAssertNotEqual(StatusText.streamLabel(.mic), StatusText.streamLabel(.output))
+    }
+
     func testSpeakingAndSilentIndicators() {
         XCTAssertEqual(StatusText.indicator(snapshot(speaking: true)), "*")
         XCTAssertEqual(StatusText.indicator(snapshot(speaking: false)), "-")
