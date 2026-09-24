@@ -220,7 +220,8 @@ for entry in recordedStalls {
 print("")
 
 // **3つに分ける。** 前の版は上2つを1つにまとめていた。
-let lostSilently = unaccounted > 0.25  // バッファ2.5個ぶん。端数を拾わない幅にする
+let silentLossThreshold = 2.5 * Double(first.frameLength) / format.sampleRate
+let lostSilently = unaccounted > silentLossThreshold  // バッファ2.5個ぶん。端数を拾わない幅にする
 if jumped != 0 {
     print("**落ちたぶんがサンプル時刻の飛びとして出ている。この手で取りこぼしを拾える。**")
     print("ADR-0015 に `RecordingGap.Reason` を1つ足して実装に入れる。")
