@@ -70,6 +70,20 @@ public struct SpeechDetector {
         return dbfs > cachedFloor + marginDb
     }
 
+    /// 窓を捨てて初期状態に戻す(ADR-0015 決定4)。
+    ///
+    /// **雑音フロアはその環境のものである。** 記録が途切れてデバイスが変わったあと、
+    /// 途切れる前のフロアが30秒間効き続けると、静かな機械へ移った場合は発話を拾えず
+    /// (ADR-0014 のカウンタに嘘の無発話が積まれる)、うるさい機械へ移った場合は
+    /// `lowLevel` が再開直後に誤って立つ。
+    public mutating func reset() {
+        for index in window.indices { window[index] = 0 }
+        writeIndex = 0
+        filled = 0
+        framesSinceRecompute = recomputeInterval
+        cachedFloor = Levels.floorDbfs
+    }
+
     private func estimateFloor() -> Double {
         guard filled > 0 else { return Levels.floorDbfs }
         let sorted = window[0 ..< filled].sorted()

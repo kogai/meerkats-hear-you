@@ -7,10 +7,10 @@ extension RecordingStore {
         try exec(
             """
             CREATE TABLE IF NOT EXISTS clock_anchors (
-              session_id    INTEGER NOT NULL REFERENCES sessions(id),
+              stream_id     INTEGER NOT NULL REFERENCES streams(id),
               monotonic_us  INTEGER NOT NULL,
               wall_us       INTEGER NOT NULL,
-              PRIMARY KEY (session_id, monotonic_us)
+              PRIMARY KEY (stream_id, monotonic_us)
             );
 
             CREATE TABLE IF NOT EXISTS seconds (
@@ -25,6 +25,14 @@ extension RecordingStore {
               PRIMARY KEY (stream_id, monotonic_us)
             );
 
+            CREATE TABLE IF NOT EXISTS gaps (
+              id            INTEGER PRIMARY KEY,
+              stream_id     INTEGER NOT NULL REFERENCES streams(id),
+              start_us      INTEGER NOT NULL,
+              end_us        INTEGER NOT NULL,
+              reason        TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS detail_windows (
               id            INTEGER PRIMARY KEY,
               stream_id     INTEGER NOT NULL REFERENCES streams(id),
@@ -37,18 +45,84 @@ extension RecordingStore {
         )
     }
 
-    public func appendAnchor(sessionId: Int64, _ anchor: ClockAnchor) throws {
+    /// **アンカーはストリーム単位で持つ**(ADR-0015 決定5)。
+    ///
+    /// 揃っていないのは `monotonic_us` の進み方ではない。`monotonic_us` は
+    /// `baseUs + frameIndex * frameDurationUs` で、刻みは公称値なので**2本とも同じ速さで進む。**
+    /// ADR-0015 決定6 で時計がセッションに1つになり、同じエポックにも乗った。
+    ///
+    /// 揃っていないのは、**その刻みが実時刻の何マイクロ秒に当たるか**である。そこを決めるのは
+    /// デバイスのサンプルクロックで、2本は別の発振器に乗っている。公称 20ms が実際には
+    /// 20.002ms である側と 20.000ms である側では、`wall_us - monotonic_us` の伸び方が違う。
+    ///
+    /// 片方のアンカーでもう片方を換算すれば、その伸び方の差だけ間違う。
+    ///
+    /// **同じ (stream_id, monotonic_us) が二度来たら投げる。**
+    /// 上書きすると、ADR-0003 がドリフトを測るために置いた点が黙って消える。
+    /// すぐ下の `appendGap` が、同じ理由で主キーを避けて代理キーにしているのと揃えた。
+    /// いまの書き手は1本のストリームの中で単調時刻を厳密に増やすので、**ここに来ること自体が
+    /// 前提の崩れを意味する。**
+    public func appendAnchor(streamId: Int64, _ anchor: ClockAnchor) throws {
         let statement = try prepare(
             """
-            INSERT OR REPLACE INTO clock_anchors (session_id, monotonic_us, wall_us)
+            INSERT INTO clock_anchors (stream_id, monotonic_us, wall_us)
             VALUES (?, ?, ?);
             """
         )
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, sessionId)
+        sqlite3_bind_int64(statement, 1, streamId)
         sqlite3_bind_int64(statement, 2, anchor.monotonicUs)
         sqlite3_bind_int64(statement, 3, anchor.wallUs)
         try step(statement)
+    }
+
+    /// 記録できなかった区間を残す(ADR-0015 決定7)。
+    ///
+    /// **主キーを `(stream_id, start_us)` にしない。** 音が戻らないまま打ち直しが続けば、
+    /// 長さ0の空隙が同じ `start_us` で並ぶ。主キーにすると後の1本が前を消し、
+    /// **何度途切れたのかが記録から消える。** 回数はそれ自体が読みたい値なので、
+    /// 代理キーを置いて全部残す。
+    public func appendGap(streamId: Int64, _ gap: RecordingGap) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO gaps (stream_id, start_us, end_us, reason)
+            VALUES (?, ?, ?, ?);
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, streamId)
+        sqlite3_bind_int64(statement, 2, gap.startUs)
+        sqlite3_bind_int64(statement, 3, gap.endUs)
+        sqlite3_bind_text(statement, 4, gap.reason.rawValue, -1, RecordingStore.transient)
+        try step(statement)
+    }
+
+    public func gaps(streamId: Int64) throws -> [RecordingGap] {
+        let statement = try prepare(
+            """
+            SELECT start_us, end_us, reason FROM gaps
+            WHERE stream_id = ? ORDER BY id;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, streamId)
+
+        var out: [RecordingGap] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let raw = String(cString: sqlite3_column_text(statement, 2))
+            // **読めない理由で行を落とさない。** 新しい版が足した理由を古い版で読むと、
+            // 落とす実装では空隙そのものが消える。理由が読めないことと、
+            // 途切れていないことは別である。長さは読めている。
+            let reason = RecordingGap.Reason(rawValue: raw) ?? .unknown
+            out.append(
+                RecordingGap(
+                    startUs: sqlite3_column_int64(statement, 0),
+                    endUs: sqlite3_column_int64(statement, 1),
+                    reason: reason
+                )
+            )
+        }
+        return out
     }
 
     /// 常時層をまとめて1トランザクションで書く。
@@ -145,15 +219,17 @@ extension RecordingStore {
         return out
     }
 
-    public func anchors(sessionId: Int64) throws -> [ClockAnchor] {
+    /// **読んだ時点でストリームに縛る。** 素の配列で返すと、2本ぶんを繋げた配列も、
+    /// 片方のIDで引いた配列も、換算に渡せてしまう(`StreamAnchors` 参照)。
+    public func anchors(streamId: Int64) throws -> StreamAnchors {
         let statement = try prepare(
             """
             SELECT monotonic_us, wall_us FROM clock_anchors
-            WHERE session_id = ? ORDER BY monotonic_us;
+            WHERE stream_id = ? ORDER BY monotonic_us;
             """
         )
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, sessionId)
+        sqlite3_bind_int64(statement, 1, streamId)
 
         var out: [ClockAnchor] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -164,7 +240,7 @@ extension RecordingStore {
                 )
             )
         }
-        return out
+        return StreamAnchors(streamId: streamId, anchors: out)
     }
 
     public func detailWindows(streamId: Int64, frameDurationUs: Int64) throws -> [DetailWindow] {

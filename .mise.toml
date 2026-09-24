@@ -32,3 +32,13 @@ run = "./run.sh"
 description = "Measure how long the WAL takes to reach SQLite's auto-checkpoint threshold"
 dir = "experiments/wal-growth"
 run = "python3 measure.py"
+
+[tasks.nat]
+description = "Measure this network's NAT mapping behaviour with public STUN servers"
+dir = "experiments/nat-behaviour"
+run = "swift run NATBehaviourSpike"
+
+[tasks.sample-time]
+description = "Check whether dropped audio buffers show up as sample-time jumps (needs a Mac)"
+dir = "experiments/sample-time-continuity"
+run = "swift run SampleTimeSpike"

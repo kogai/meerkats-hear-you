@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var analysis: AnalysisWindowController?
     private let liveState = LiveState()
 
+    /// **セッションで1つ。** 2本のパイプラインに同じものを渡す(ADR-0015 決定6)。
+    /// ここに置いてあるのは、別々に作った瞬間に2本が別の原点を持つからである。
+    private let clock = ContinuousMonotonicClock()
+
     /// 記録の設定。**ストリーム種別を決めている唯一の場所にする。**
     /// 表示は記録より先に立ち上がるので、ここに置かないとメニューバーだけ別の値を持つ。
     /// 受信音声を足すときに、文言だけ取り残されるのがその形になる。
@@ -70,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 実際に切り出す率が食い違えば、あとから見ても直しようがない。
             let currentSessionId = self.sessionId
             let liveState = self.liveState
+            // 時計も写しておく。プロパティのまま参照すると閉包が self を掴む。
+            // 参照型なので、写しても指す先はセッションで1つのままである。
+            let clock = self.clock
             var startedStreamId: Int64 = 0
 
             let capture = AudioCapture(
@@ -87,11 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     startedStreamId = streamId
 
-                    let sink = StoreSink(
-                        store: store, streamId: streamId, sessionId: currentSessionId
-                    )
+                    let sink = StoreSink(store: store, streamId: streamId)
                     let pipeline = RecordingPipeline(
-                        configuration: configuration, sink: sink, liveState: liveState
+                        configuration: configuration, sink: sink, liveState: liveState,
+                        clock: clock
                     )
                     pipeline.onAnomaly = {
                         AnomalyNotifier.notify($0, in: configuration.streamKind)
@@ -142,16 +148,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// RecordingPipeline の出力先を RecordingStore に繋ぐ。
-/// アンカーはセッションに、レベルはストリームに紐づくので、両方のIDを持つ。
+///
+/// **持つIDはストリームだけ。** アンカーもストリームに紐づくようになった
+/// (ADR-0015 決定5)。2本のストリームは別のデバイスのクロックに乗っているので、
+/// 片方のアンカーでもう片方を換算すると、ずれ方の差だけ間違う。
 private final class StoreSink: RecordingPipeline.Sink {
     private let store: RecordingStore
     private let streamId: Int64
-    private let sessionId: Int64
 
-    init(store: RecordingStore, streamId: Int64, sessionId: Int64) {
+    init(store: RecordingStore, streamId: Int64) {
         self.store = store
         self.streamId = streamId
-        self.sessionId = sessionId
     }
 
     func write(seconds records: [SecondRecord]) throws {
@@ -163,7 +170,11 @@ private final class StoreSink: RecordingPipeline.Sink {
     }
 
     func write(anchor: ClockAnchor) throws {
-        try store.appendAnchor(sessionId: sessionId, anchor)
+        try store.appendAnchor(streamId: streamId, anchor)
+    }
+
+    func write(gap: RecordingGap) throws {
+        try store.appendGap(streamId: streamId, gap)
     }
 }
 

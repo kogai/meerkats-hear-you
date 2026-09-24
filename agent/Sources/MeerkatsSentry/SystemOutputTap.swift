@@ -44,7 +44,7 @@ public final class SystemOutputTap {
     private let makePipeline: PipelineFactory
     private let onError: (Error) -> Void
 
-    private var pipeline: RecordingPipeline?
+    private var box: PipelineBox?
     private var tapId = AudioObjectID(kAudioObjectUnknown)
     private var aggregateId = AudioObjectID(kAudioObjectUnknown)
     private var ioProcId: AudioDeviceIOProcID?
@@ -80,12 +80,17 @@ public final class SystemOutputTap {
         do {
             try beginTapping()
         } catch {
+            // **作りかけの経路を先に断つ。** 残すと、一度も読んでいないものを
+            // stop() が締めにいける。**`take()` で断つ。** 参照を捨てるだけでは、
+            // IOの閉包が持っている入れ物は生きたままで、そこから経路へ流れ続ける。
+            // 順序は stop() と揃える。IOが回り始めていれば、畳むまでの間にバッファが届く。
+            _ = box?.take()
+            box = nil
+
             // **途中で失敗したぶんを必ず戻す。** タップは作れたが集約デバイスで落ちた、
             // という形が普通に起きる。呼び出し側は start が投げたら stop を呼ばないので、
             // ここで戻さないと Core Audio の側にタップが残り続ける。
             teardown()
-            // 作りかけの経路も手放す。残すと、一度も読んでいないものを stop() が締めにいける。
-            pipeline = nil
             throw error
         }
     }
@@ -145,15 +150,20 @@ public final class SystemOutputTap {
             )
         }
 
-        self.pipeline = pipeline
+        let box = PipelineBox(pipeline)
+        self.box = box
 
         // **IOの閉包に self を入れない。** 入れると、最後の強参照がIOスレッドの中で
         // 落ちうる。そこで deinit が走ると、IOスレッドから AudioDeviceStop を呼んで
         // 自分を待つことになる。要るのは経路と誤りの行き先だけなので、それだけ持たせる。
+        //
+        // 渡すのは経路そのものではなく入れ物である。経路を値で渡すと、`stop()` が
+        // こちら側を手放しても閉包の参照が無傷のまま残り、締めたあとの経路に流し込める。
+        // マイク側(`AudioCapture`)と同じ形にしてある。
         let onError = self.onError
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcId, aggregateId, nil) {
             _, inputData, _, _, _ in
-            SystemOutputTap.handle(inputData, pipeline: pipeline, onError: onError)
+            SystemOutputTap.handle(inputData, box: box, onError: onError)
         }
         guard status == noErr, let ioProcId else { throw TapError.ioProcFailed(status) }
 
@@ -163,10 +173,16 @@ public final class SystemOutputTap {
 
     /// 記録を締めて、タップを畳む。
     public func stop() {
+        // **畳むより先に断つ。** 畳んでから断つと、`AudioDeviceStop` と `take()` の
+        // 間に届いたバッファが**生きた経路に入る。** 10秒の境界に当たれば、
+        // 止めたあとに SQLite まで書きにいく。`PipelineBox` は「締めたあとに届いた
+        // バッファは記録の外の音」と決めているのに、そこだけ捨てられない窓になる。
+        //
+        // 代償は、止める直前のバッファ1つぶん(約100ms)が記録に入らないこと。
+        // **入るほうが間違いである。** 止めると決めたあとの音である。
+        let pipeline = box?.take()
+        box = nil
         teardown()
-        // 先に手放す。締めに失敗したときに、もう一度締めにいかないため。
-        let pipeline = self.pipeline
-        self.pipeline = nil
         do {
             try pipeline?.finish()
         } catch {
@@ -180,14 +196,23 @@ public final class SystemOutputTap {
     /// そこで `finish()` まで走ると、1本も読んでいない記録を締めることになる。
     /// 何度呼んでも同じ結果になるようにしてある。
     private func teardown() {
-        // **ここで在庫のバッファが撃ち止められることに寄りかかっている。**
+        // **在庫のバッファには、まだ寄りかかっている。**
         //
-        // **明文の保証は無い。** `AudioHardware.h` は `AudioDeviceStop` にも
-        // `AudioDeviceDestroyIOProcID` にも、呼んだあとコールバックが来ないとは書いていない。
-        // 実務上はそう扱われているが、それは慣行であって契約ではない。
+        // `AudioHardware.h` は `AudioDeviceStop` にも `AudioDeviceDestroyIOProcID` にも、
+        // 呼んだあとコールバックが来ないとは書いていない。実務上はそう扱われているが、
+        // それは慣行であって契約ではない。
         //
-        // マイク側(`AudioCapture`)が `PipelineBox` を挟んでいるのに、こちらが挟んでいないのは
-        // **理由があってではなく、まだ手が回っていないためである。** 揃えるなら挟む側に揃える。
+        // **`PipelineBox` が消したのは、締めとの競合だけである。** `stop()` はここへ来る前に
+        // `take()` で経路を断つ。断ちは錠の中で起きるので、在庫の `ingest` が終わるまで
+        // 返らない。`finish()` が `ingest` と同じ中身を触ることはなくなった。
+        //
+        // **残っているものが2つある。**
+        //
+        // - `AudioDeviceDestroyIOProcID` のあとに呼ばれた場合、閉包は死んだ `bufferList` を
+        //   読む。**入れ物では防げない。** 箱が守るのは経路の中身であって、引数として
+        //   渡されたポインタではない。
+        // - **`deinit` は断たない。** `stop()` を呼ばずにここへ来た場合、入れ物は生きた
+        //   経路を持ったままIOの閉包に残る。締める相手がいないだけで、経路は生きている。
         if let ioProcId {
             AudioDeviceStop(aggregateId, ioProcId)
             AudioDeviceDestroyIOProcID(aggregateId, ioProcId)
@@ -298,10 +323,10 @@ public final class SystemOutputTap {
     /// 記録しようとしている当の現象を自分で作ることになる。
     ///
     /// **いまはその約束を守れていない。** 配列を確保し、時刻を引き、パイプラインを回す。
-    /// パイプラインは10秒に1回 SQLite まで到達するので、その1回はIOスレッドで書き込む。
-    /// マイク側(`AudioCapture`)も同じ形なので、直すなら両方まとめて、
-    /// 確保済みのリングに写して別のスレッドで捌く形になる。**片方だけ直すと、
-    /// 2つの経路で理由の違う実装が並ぶ。**
+    /// パイプラインはSQLiteまで到達するので、WALのチェックポイントも詳細層のBLOBも
+    /// ここで書かれる。直し方は ADR-0016 が決めている——事前確保したリングに写して戻り、
+    /// ストリームごとの直列キューで捌く。マイク側(`AudioCapture`)も同じ形なので、
+    /// **片方だけ直すと、2つの経路で理由の違う実装が並ぶ。**
     ///
     /// 型メソッドにしてあるのは、IOの閉包に `self` を入れないためである。**`Self.` ではなく
     /// 型名で書く。** `Self.` は `final` や `static` を外した瞬間に黙って `self` を捕まえ、
@@ -309,9 +334,12 @@ public final class SystemOutputTap {
     ///
     /// なお `onError` は呼び出し側が書く閉包なので、**そこで自分を強く捕まえれば
     /// 同じ循環が外から作れる。** 呼び出し側で弱く持つこと。
+    ///
+    /// **入れ物の錠を音のスレッドで取ることになる。** 待つ相手は `take()` だけで、
+    /// あちらは参照を1つ入れ替えるだけなので待ち時間に上限がある(`PipelineBox` を参照)。
     private static func handle(
         _ bufferList: UnsafePointer<AudioBufferList>,
-        pipeline: RecordingPipeline,
+        box: PipelineBox,
         onError: (Error) -> Void
     ) {
         let buffers = UnsafeMutableAudioBufferListPointer(
@@ -330,7 +358,7 @@ public final class SystemOutputTap {
         let wallUs = Int64(Date().timeIntervalSince1970 * 1_000_000)
 
         do {
-            try pipeline.ingest(samples, wallUs: wallUs)
+            try box.ingest(samples, wallUs: wallUs)
         } catch {
             onError(error)
         }

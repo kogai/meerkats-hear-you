@@ -36,7 +36,11 @@ final class AnchorSchedulerTests: XCTestCase {
 
 final class ClockConversionTests: XCTestCase {
     func testNoAnchorsCannotConvert() {
-        XCTAssertNil(ClockConversion.wallTime(forMonotonicUs: 0, anchors: []))
+        XCTAssertNil(
+            ClockConversion.wallTime(
+                forMonotonicUs: 0, in: StreamAnchors(streamId: 1, anchors: [])
+            )
+        )
     }
 
     /// 2つのアンカーの間は線形に補間する。
@@ -45,7 +49,9 @@ final class ClockConversionTests: XCTestCase {
             ClockAnchor(monotonicUs: 0, wallUs: 1_000_000_000),
             ClockAnchor(monotonicUs: 100_000, wallUs: 1_000_100_000),
         ]
-        let estimate = ClockConversion.wallTime(forMonotonicUs: 50_000, anchors: anchors)
+        let estimate = ClockConversion.wallTime(
+            forMonotonicUs: 50_000, in: StreamAnchors(streamId: 1, anchors: anchors)
+        )
 
         XCTAssertEqual(estimate?.wallUs, 1_000_050_000)
         // 2つの時計の進みが一致しているので、この区間に食い違いは無い。
@@ -60,7 +66,9 @@ final class ClockConversionTests: XCTestCase {
             // 単調時計で100_000us進む間に、実時刻は100_500us進んだ
             ClockAnchor(monotonicUs: 100_000, wallUs: 100_500),
         ]
-        let estimate = ClockConversion.wallTime(forMonotonicUs: 50_000, anchors: anchors)
+        let estimate = ClockConversion.wallTime(
+            forMonotonicUs: 50_000, in: StreamAnchors(streamId: 1, anchors: anchors)
+        )
 
         XCTAssertEqual(estimate?.wallUs, 50_250)
         XCTAssertEqual(estimate?.uncertaintyUs, 500)
@@ -72,7 +80,9 @@ final class ClockConversionTests: XCTestCase {
             ClockAnchor(monotonicUs: 0, wallUs: 0),
         ]
         XCTAssertEqual(
-            ClockConversion.wallTime(forMonotonicUs: 50_000, anchors: anchors)?.wallUs,
+            ClockConversion.wallTime(
+            forMonotonicUs: 50_000, in: StreamAnchors(streamId: 1, anchors: anchors)
+        )?.wallUs,
             50_000
         )
     }
@@ -81,8 +91,12 @@ final class ClockConversionTests: XCTestCase {
     func testExtrapolationUncertaintyGrowsWithDistance() {
         let anchors = [ClockAnchor(monotonicUs: 0, wallUs: 1_000_000)]
 
-        let near = ClockConversion.wallTime(forMonotonicUs: 1_000_000, anchors: anchors)
-        let far = ClockConversion.wallTime(forMonotonicUs: 100_000_000, anchors: anchors)
+        let near = ClockConversion.wallTime(
+            forMonotonicUs: 1_000_000, in: StreamAnchors(streamId: 1, anchors: anchors)
+        )
+        let far = ClockConversion.wallTime(
+            forMonotonicUs: 100_000_000, in: StreamAnchors(streamId: 1, anchors: anchors)
+        )
 
         XCTAssertEqual(near?.wallUs, 2_000_000)
         XCTAssertGreaterThan(far!.uncertaintyUs, near!.uncertaintyUs)
