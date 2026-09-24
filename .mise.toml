@@ -28,6 +28,11 @@ description = "Build a signed .app without Xcode and check it can hold mic permi
 dir = "experiments/macos-app-bundle-spike"
 run = "./run.sh"
 
+[tasks.wal-growth]
+description = "Measure how long the WAL takes to reach SQLite's auto-checkpoint threshold"
+dir = "experiments/wal-growth"
+run = "python3 measure.py"
+
 [tasks.nat]
 description = "Measure this network's NAT mapping behaviour with public STUN servers"
 dir = "experiments/nat-behaviour"
