@@ -34,6 +34,59 @@ final class RecordingStoreRecordsTests: XCTestCase {
         )
     }
 
+    /// **2本のストリームが同時に書く。** 受信音声(ADR-0008)を起こすと、マイクのタップと
+    /// Core Audio のIOブロックの2本がこの接続を叩く。
+    ///
+    /// 接続を直列にしていないと、`appendSeconds` の `BEGIN`/`COMMIT` が入れ子になって
+    /// 落ちるか、**他方のトランザクションを締める。** `SQLITE_OPEN_FULLMUTEX` は
+    /// 呼び出し1つずつしか直列にしないので、そこは守られない。
+    func testConcurrentWritersFromTwoStreams() throws {
+        let otherStreamId = try store.addStream(
+            sessionId: sessionId, kind: .output, deviceName: nil, sampleRate: 48_000, frameMs: 20
+        )
+        let rounds = 40
+        let batch = 25
+        let failures = ErrorBox()
+
+        DispatchQueue.concurrentPerform(iterations: 2) { worker in
+            let stream = worker == 0 ? self.streamId : otherStreamId
+            for round in 0 ..< rounds {
+                let base = Int64(round * batch) * 1_000_000
+                let records = (0 ..< batch).map {
+                    self.record(base + Int64($0) * 1_000_000)
+                }
+                do {
+                    try self.store.appendSeconds(streamId: stream, records)
+                } catch {
+                    failures.add(error)
+                }
+            }
+        }
+
+        XCTAssertEqual(failures.all.map { "\($0)" }, [], "同時に書いて失敗した")
+        XCTAssertEqual(try store.seconds(streamId: streamId).count, rounds * batch)
+        XCTAssertEqual(try store.seconds(streamId: otherStreamId).count, rounds * batch)
+    }
+
+    /// 別スレッドからの失敗を集める。テスト側の集約で競合すると、
+    /// 何を確かめていたのか分からなくなる。
+    private final class ErrorBox {
+        private let lock = NSLock()
+        private var errors: [Error] = []
+
+        func add(_ error: Error) {
+            lock.lock()
+            defer { lock.unlock() }
+            errors.append(error)
+        }
+
+        var all: [Error] {
+            lock.lock()
+            defer { lock.unlock() }
+            return errors
+        }
+    }
+
     func testSecondsRoundTrip() throws {
         let written = (0 ..< 5).map { record(Int64($0) * 1_000_000, mean: -20 - Double($0)) }
         try store.appendSeconds(streamId: streamId, written)

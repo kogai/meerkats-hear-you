@@ -28,6 +28,24 @@ public enum StreamKind: String {
 public final class RecordingStore {
     private var db: OpaquePointer?
 
+    /// **接続を叩くスレッドが2本ある。** マイクのタップと、受信音声のIOブロック
+    /// (ADR-0008)。`SQLITE_OPEN_FULLMUTEX` は呼び出し1つずつを直列にするだけで、
+    /// **呼び出しをまたぐ対を守らない。** 守れていないものが2つある。
+    ///
+    /// - `appendSeconds` の `BEGIN` と `COMMIT` の対。割り込まれると、入れ子の `BEGIN` で
+    ///   失敗するか、**他方のトランザクションを締める**
+    /// - `addStream` の挿入と `sqlite3_last_insert_rowid` の対。間に別スレッドの挿入が入ると、
+    ///   **別の行のIDを自分のストリームIDとして持つ。** 以後その記録は別のストリームに付く
+    ///
+    /// どちらも静かに壊れるので、公開の口をこの錠で直列にする。
+    ///
+    /// **音のスレッドで錠を取ることになる。** そこは既に SQLite まで書いているので、
+    /// 待ちの桁は変わらない。音のスレッドから記録を追い出すのは ADR-0016 の仕事で、
+    /// これはその前に記録が壊れるのを止めるためのものである。
+    ///
+    /// 再帰錠にしてあるのは、公開の口が互いを呼んでも死なないようにするため。
+    let connectionLock = NSRecursiveLock()
+
     /// バインドした値をSQLite側でコピーさせる。Swiftからは定数が見えないので自前で用意する。
     static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -56,6 +74,8 @@ public final class RecordingStore {
     }
 
     public func close() {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         sqlite3_close_v2(db)
         db = nil
     }
@@ -85,6 +105,8 @@ public final class RecordingStore {
     // MARK: - セッションとストリーム
 
     public func startSession(wallUs: Int64, agentVersion: String) throws -> Int64 {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             "INSERT INTO sessions (started_wall_us, agent_version) VALUES (?, ?);"
         )
@@ -96,6 +118,8 @@ public final class RecordingStore {
     }
 
     public func endSession(id: Int64, wallUs: Int64) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare("UPDATE sessions SET ended_wall_us = ? WHERE id = ?;")
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, wallUs)
@@ -110,6 +134,8 @@ public final class RecordingStore {
         sampleRate: Int,
         frameMs: Int
     ) throws -> Int64 {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             INSERT INTO streams (session_id, kind, device_name, sample_rate, frame_ms)
