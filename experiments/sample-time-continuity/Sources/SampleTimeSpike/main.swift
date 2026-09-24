@@ -56,7 +56,7 @@ let lock = NSLock()
 var samples: [Sample] = []
 var index = 0
 
-/// 詰まらせの進行。**タップの呼び出しは直列**なので、触るのはタップのスレッドだけ。
+/// 詰まらせの進行。タップ側で更新し、報告時は `lock` の下で写す。
 var stallCursor = 0
 var firstArrivalContinuous: UInt64 = 0
 var stallLog: [(position: Int, planned: Double, seconds: Double)] = []
@@ -84,6 +84,7 @@ input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
     // **最初に時刻を読む。** あとで読むと、この閉包の中の処理時間が混ざる。
     let absolute = mach_absolute_time()
     let continuous = mach_continuous_time()
+    var plannedStallSeconds: Double?
 
     lock.lock()
     let current = index
@@ -100,10 +101,6 @@ input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
             hostTimeValid: time.isHostTimeValid
         )
     )
-    lock.unlock()
-
-    // 詰まらせは閉包の中で寝る。**実装でもこの閉包が記録を書いている**ので、
-    // ここが詰まることが、そのまま過負荷の形になる。
     if firstArrivalContinuous == 0 { firstArrivalContinuous = continuous }
     if stallCursor < stalls.count {
         let elapsed = millis(ticks: Double(continuous) - Double(firstArrivalContinuous)) / 1000
@@ -111,8 +108,15 @@ input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
             let stall = stalls[stallCursor]
             stallCursor += 1
             stallLog.append((position: current, planned: stall.at, seconds: stall.seconds))
-            Thread.sleep(forTimeInterval: stall.seconds)
+            plannedStallSeconds = stall.seconds
         }
+    }
+    lock.unlock()
+
+    // 詰まらせは閉包の中で寝る。**実装でもこの閉包が記録を書いている**ので、
+    // ここが詰まることが、そのまま過負荷の形になる。
+    if let plannedStallSeconds {
+        Thread.sleep(forTimeInterval: plannedStallSeconds)
     }
 }
 
@@ -129,6 +133,7 @@ input.removeTap(onBus: 0)
 
 lock.lock()
 let collected = samples
+let recordedStalls = stallLog
 lock.unlock()
 
 // MARK: - 報告
@@ -189,7 +194,7 @@ print("到着から見た窓:       \(String(format: "%.3f", windowSeconds)) 秒
 print("勘定の合わない差:     \(String(format: "%+.3f", unaccounted)) 秒")
 print("")
 
-for entry in stallLog {
+for entry in recordedStalls {
     let missing = jumps.first { $0.position == entry.position + 1 }?.missing ?? 0
     // 追いつきの束。溜めて後から届いたなら、直後のバッファが立て続けに来る。
     var burst = 0
