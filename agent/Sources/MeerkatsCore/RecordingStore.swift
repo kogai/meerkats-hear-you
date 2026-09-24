@@ -28,6 +28,38 @@ public enum StreamKind: String {
 public final class RecordingStore {
     private var db: OpaquePointer?
 
+    /// **受信音声(ADR-0008)を起こすと、接続を叩くスレッドが2本になる。** マイクのタップと、
+    /// 受信側のIOブロックである。`SQLITE_OPEN_FULLMUTEX` は呼び出し1つずつを直列にするだけで、
+    /// **呼び出しをまたぐ対を守らない。** 守れていないものが2つある。
+    ///
+    /// - `appendSeconds` の `BEGIN` と `COMMIT` の対。割り込まれた側は入れ子の `BEGIN` で
+    ///   投げ、**その25秒ぶんが書かれないまま落ちる。** さらに、トランザクションが開いている間に
+    ///   もう片方が `appendGap` などの単文を書くと、**それは相手のトランザクションに乗る。**
+    ///   相手が `ROLLBACK` すれば一緒に消える
+    /// - `addStream` の挿入と `sqlite3_last_insert_rowid` の対。間に別スレッドの挿入が入ると、
+    ///   **別の行のIDを自分のストリームIDとして持つ。** 以後その記録は別のストリームに付く
+    ///
+    /// どちらも静かに壊れるので、**書き込む口だけ**をこの錠で直列にする。
+    ///
+    /// **読み出す口には掛けない。** 掛けると、分析ウインドウが全行を読む間、音のスレッドが
+    /// そこで待つ。ADR-0016 はその競合を一度「誤りである」と取り下げている——FULLMUTEX の
+    /// ミューテックスはAPI呼び出しごとに取れて放されるので、音のスレッドが待つのは読み手の
+    /// `sqlite3_step` 1回ぶんにすぎない。**錠を掛けると、取り下げたはずの競合が本当になる。**
+    ///
+    /// 読み出しを守らないので、**読み手が繰り返している最中の `COMMIT` が弾かれうる**
+    /// 経路は残る。これは ADR-0016 決定7 の「分析ウインドウの読み出しは別接続で開く」で
+    /// 閉じるもので、接続を分ければ読み書きは互いを待たなくなる。
+    ///
+    /// **音のスレッドで錠を取ることになる。** そこは既に SQLite まで書いているので、
+    /// 書き込み同士の待ちの桁は変わらない(相手のコミットは元から待たされていた)。
+    /// ただし `NSRecursiveLock` も `PipelineBox` の `NSLock` と同じく優先度継承を持たない。
+    /// **ADR-0016 決定1 を実装して音のスレッドから記録を追い出すとき、この錠も一緒に外す。**
+    /// リングの向こう側に錠が残ると、決定1 が空振りする。
+    ///
+    /// 再帰錠にしてあるのは、公開の口が互いを呼んでも死なないようにするため。
+    /// **いまは互いを呼んでいるものは無い。** 将来の並べ替えに対する備えである。
+    let connectionLock = NSRecursiveLock()
+
     /// バインドした値をSQLite側でコピーさせる。Swiftからは定数が見えないので自前で用意する。
     static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -56,6 +88,8 @@ public final class RecordingStore {
     }
 
     public func close() {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         sqlite3_close_v2(db)
         db = nil
     }
@@ -85,6 +119,8 @@ public final class RecordingStore {
     // MARK: - セッションとストリーム
 
     public func startSession(wallUs: Int64, agentVersion: String) throws -> Int64 {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             "INSERT INTO sessions (started_wall_us, agent_version) VALUES (?, ?);"
         )
@@ -96,6 +132,8 @@ public final class RecordingStore {
     }
 
     public func endSession(id: Int64, wallUs: Int64) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare("UPDATE sessions SET ended_wall_us = ? WHERE id = ?;")
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, wallUs)
@@ -110,6 +148,8 @@ public final class RecordingStore {
         sampleRate: Int,
         frameMs: Int
     ) throws -> Int64 {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             INSERT INTO streams (session_id, kind, device_name, sample_rate, frame_ms)

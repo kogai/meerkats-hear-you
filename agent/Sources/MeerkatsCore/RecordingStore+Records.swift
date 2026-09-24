@@ -63,6 +63,8 @@ extension RecordingStore {
     /// いまの書き手は1本のストリームの中で単調時刻を厳密に増やすので、**ここに来ること自体が
     /// 前提の崩れを意味する。**
     public func appendAnchor(streamId: Int64, _ anchor: ClockAnchor) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             INSERT INTO clock_anchors (stream_id, monotonic_us, wall_us)
@@ -83,6 +85,8 @@ extension RecordingStore {
     /// **何度途切れたのかが記録から消える。** 回数はそれ自体が読みたい値なので、
     /// 代理キーを置いて全部残す。
     public func appendGap(streamId: Int64, _ gap: RecordingGap) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             INSERT INTO gaps (stream_id, start_us, end_us, reason)
@@ -131,8 +135,14 @@ extension RecordingStore {
     /// 常駐プロセスではディスクとCPUを起こし続けることになる(ADR-0004)。
     /// どれだけ溜めてから呼ぶかは呼び出し側が決める。
     public func appendSeconds(streamId: Int64, _ records: [SecondRecord]) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         guard !records.isEmpty else { return }
 
+        // **`BEGIN` と `COMMIT` を同じ `do` に入れる。** `COMMIT` を外に出すと、それが
+        // 失敗したときにトランザクションが開いたまま残る。次の `appendSeconds` は入れ子の
+        // `BEGIN` で落ち、その次も落ちる。**戻る道が無く、以後このセッションは1行も
+        // 書けなくなる。**
         try exec("BEGIN;")
         do {
             let statement = try prepare(
@@ -157,14 +167,16 @@ extension RecordingStore {
                 sqlite3_bind_int64(statement, 8, Int64(record.frameCount))
                 try step(statement)
             }
+            try exec("COMMIT;")
         } catch {
             try? exec("ROLLBACK;")
             throw error
         }
-        try exec("COMMIT;")
     }
 
     public func appendDetailWindow(streamId: Int64, _ window: DetailWindow) throws {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         let encoded = DetailFrameCodec.encode(window.frames)
         let statement = try prepare(
             """
