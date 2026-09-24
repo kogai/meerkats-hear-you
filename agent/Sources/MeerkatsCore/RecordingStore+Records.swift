@@ -102,8 +102,6 @@ extension RecordingStore {
     }
 
     public func gaps(streamId: Int64) throws -> [RecordingGap] {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT start_us, end_us, reason FROM gaps
@@ -141,6 +139,10 @@ extension RecordingStore {
         defer { connectionLock.unlock() }
         guard !records.isEmpty else { return }
 
+        // **`BEGIN` と `COMMIT` を同じ `do` に入れる。** `COMMIT` を外に出すと、それが
+        // 失敗したときにトランザクションが開いたまま残る。次の `appendSeconds` は入れ子の
+        // `BEGIN` で落ち、その次も落ちる。**戻る道が無く、以後このセッションは1行も
+        // 書けなくなる。**
         try exec("BEGIN;")
         do {
             let statement = try prepare(
@@ -165,11 +167,11 @@ extension RecordingStore {
                 sqlite3_bind_int64(statement, 8, Int64(record.frameCount))
                 try step(statement)
             }
+            try exec("COMMIT;")
         } catch {
             try? exec("ROLLBACK;")
             throw error
         }
-        try exec("COMMIT;")
     }
 
     public func appendDetailWindow(streamId: Int64, _ window: DetailWindow) throws {
@@ -198,8 +200,6 @@ extension RecordingStore {
     public func seconds(streamId: Int64, fromUs: Int64 = .min, toUs: Int64 = .max) throws
         -> [SecondRecord]
     {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT monotonic_us, mean_dbfs, min_dbfs, max_dbfs, speech_ratio, clip_ratio,
@@ -234,8 +234,6 @@ extension RecordingStore {
     /// **読んだ時点でストリームに縛る。** 素の配列で返すと、2本ぶんを繋げた配列も、
     /// 片方のIDで引いた配列も、換算に渡せてしまう(`StreamAnchors` 参照)。
     public func anchors(streamId: Int64) throws -> StreamAnchors {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT monotonic_us, wall_us FROM clock_anchors
@@ -258,8 +256,6 @@ extension RecordingStore {
     }
 
     public func detailWindows(streamId: Int64, frameDurationUs: Int64) throws -> [DetailWindow] {
-        connectionLock.lock()
-        defer { connectionLock.unlock() }
         let statement = try prepare(
             """
             SELECT start_us, trigger, frames FROM detail_windows
