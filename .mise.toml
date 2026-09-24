@@ -28,6 +28,11 @@ description = "Build a signed .app without Xcode and check it can hold mic permi
 dir = "experiments/macos-app-bundle-spike"
 run = "./run.sh"
 
+[tasks.nat]
+description = "Measure this network's NAT mapping behaviour with public STUN servers"
+dir = "experiments/nat-behaviour"
+run = "swift run NATBehaviourSpike"
+
 [tasks.sample-time]
 description = "Check whether dropped audio buffers show up as sample-time jumps (needs a Mac)"
 dir = "experiments/sample-time-continuity"
