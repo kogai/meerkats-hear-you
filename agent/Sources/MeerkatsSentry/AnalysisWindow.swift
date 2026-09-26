@@ -8,18 +8,25 @@ import SwiftUI
 /// 常時表示がメモリから読むのに対し、こちらはSQLiteを読む。過去を見るための画面なので、
 /// まとめ書きによる数秒の遅れは問題にならない。
 public final class AnalysisWindowController {
+    /// 表示するストリーム。**種別を持たせる。** 文言も色もこれで決まる。
+    public struct Stream {
+        public let id: Int64
+        public let kind: StreamKind
+
+        public init(id: Int64, kind: StreamKind) {
+            self.id = id
+            self.kind = kind
+        }
+    }
+
     private var window: NSWindow?
     private let store: RecordingStore
-    private let streamId: Int64
-    private let streamKind: StreamKind
+    private let streams: [Stream]
     private let frameDurationUs: Int64
 
-    public init(
-        store: RecordingStore, streamId: Int64, streamKind: StreamKind, frameDurationUs: Int64
-    ) {
+    public init(store: RecordingStore, streams: [Stream], frameDurationUs: Int64) {
         self.store = store
-        self.streamId = streamId
-        self.streamKind = streamKind
+        self.streams = streams
         self.frameDurationUs = frameDurationUs
     }
 
@@ -31,19 +38,21 @@ public final class AnalysisWindowController {
         }
 
         let view = AnalysisView(
-            streamKind: streamKind,
-            load: { [store, streamId] in
-                (try? store.seconds(streamId: streamId)) ?? []
-            },
-            loadDetails: { [store, streamId, frameDurationUs] in
-                (try? store.detailWindows(
-                    streamId: streamId, frameDurationUs: frameDurationUs
-                )) ?? []
+            streams: streams.map { stream in
+                AnalysisView.Series(
+                    kind: stream.kind,
+                    load: { [store] in (try? store.seconds(streamId: stream.id)) ?? [] },
+                    loadDetails: { [store, frameDurationUs] in
+                        (try? store.detailWindows(
+                            streamId: stream.id, frameDurationUs: frameDurationUs
+                        )) ?? []
+                    }
+                )
             }
         )
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
@@ -59,99 +68,154 @@ public final class AnalysisWindowController {
 }
 
 struct AnalysisView: View {
-    let streamKind: StreamKind
-    let load: () -> [SecondRecord]
-    let loadDetails: () -> [DetailWindow]
+    struct Series: Identifiable {
+        let kind: StreamKind
+        let load: () -> [SecondRecord]
+        let loadDetails: () -> [DetailWindow]
 
-    @State private var records: [SecondRecord] = []
-    @State private var details: [DetailWindow] = []
+        var id: String { kind.rawValue }
+        var color: Color { kind == .mic ? .blue : .orange }
+    }
+
+    let streams: [Series]
+
+    @State private var records: [String: [SecondRecord]] = [:]
+    @State private var details: [String: [DetailWindow]] = [:]
+
+    /// **まとめ書きは10秒ごと**(`RecordingPipeline.Configuration.flushIntervalSeconds`)。
+    /// それより細かく読んでも新しい行は出ない。
+    private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
-            LevelChart(records: records)
-                .frame(minHeight: 160)
+            legend
+            chart
             detailList
         }
         .padding(16)
         .onAppear(perform: reload)
+        .onReceive(tick) { _ in reload() }
     }
 
-    private var header: some View {
-        HStack {
-            Text("\(records.count) 秒ぶんの記録")
-                .font(.headline)
+    private var legend: some View {
+        HStack(spacing: 16) {
+            ForEach(streams) { series in
+                HStack(spacing: 6) {
+                    Rectangle().fill(series.color).frame(width: 14, height: 3)
+                    Text(StatusText.streamLabel(series.kind))
+                    Text(latestText(for: series))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
             Spacer()
-            Button("再読み込み", action: reload)
+            Text("薄い線は同じ1秒の最小")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+    }
+
+    private var chart: some View {
+        LevelChart(series: streams.map { ($0.color, records[$0.id] ?? []) })
+            .frame(minHeight: 200)
     }
 
     @ViewBuilder
     private var detailList: some View {
-        if details.isEmpty {
+        let rows = streams.flatMap { series in
+            (details[series.id] ?? []).map { (series, $0) }
+        }
+        if rows.isEmpty {
             Text("異常として記録された区間はありません")
                 .foregroundStyle(.secondary)
         } else {
-            Text("異常として残した区間")
-                .font(.headline)
-            List(Array(details.enumerated()), id: \.offset) { _, window in
+            Text("異常として残した区間").font(.headline)
+            List(Array(rows.enumerated()), id: \.offset) { _, row in
+                let (series, window) = row
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(label(for: window.trigger))
-                    Text(
-                        "\(window.startUs / 1_000_000) 秒付近 / \(window.frames.count) フレーム"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Text("\(StatusText.streamLabel(series.kind)): \(label(for: window.trigger, in: series.kind))")
+                    Text("\(window.startUs / 1_000_000) 秒付近 / \(window.frames.count) フレーム")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    private func label(for trigger: String) -> String {
-        guard let kind = AnomalyKind(rawValue: trigger) else { return trigger }
-        return StatusText.description(of: kind, in: streamKind)
+    private func latestText(for series: Series) -> String {
+        guard let last = records[series.id]?.last else { return "記録なし" }
+        guard last.meanDbfs > Levels.floorDbfs else { return "入力なし" }
+        return String(format: "%.1f dBFS", last.meanDbfs)
+    }
+
+    private func label(for trigger: String, in kind: StreamKind) -> String {
+        guard let anomaly = AnomalyKind(rawValue: trigger) else { return trigger }
+        return StatusText.description(of: anomaly, in: kind)
     }
 
     private func reload() {
-        records = load()
-        details = loadDetails()
+        for series in streams {
+            records[series.id] = series.load()
+            details[series.id] = series.loadDetails()
+        }
     }
 }
 
-/// レベルの推移。平均だけでなく最小も描くのは、1秒の中の落ち込みが平均に
-/// 埋もれるのを画面上でも避けるため。
+/// レベルの推移。**濃い線が平均、薄い線が同じ1秒の最小。** 最小を別に描くのは、
+/// 1秒の中の落ち込みが平均に埋もれるのを画面上でも避けるため。
 struct LevelChart: View {
-    let records: [SecondRecord]
+    let series: [(color: Color, records: [SecondRecord])]
+
+    /// 目盛り。下端は `Levels.floorDbfs`。
+    private let marks: [Double] = [0, -30, -60, -90]
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                path(for: \.minDbfs, in: geometry.size)
-                    .stroke(.orange.opacity(0.6), lineWidth: 1)
-                path(for: \.meanDbfs, in: geometry.size)
-                    .stroke(.blue, lineWidth: 1.5)
+        HStack(spacing: 6) {
+            VStack(alignment: .trailing) {
+                ForEach(marks, id: \.self) { mark in
+                    Text("\(Int(mark))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    if mark != marks.last { Spacer() }
+                }
             }
-            .background(Color.primary.opacity(0.04))
+            GeometryReader { geometry in
+                ZStack {
+                    ForEach(marks, id: \.self) { mark in
+                        Path { path in
+                            let y = geometry.size.height * CGFloat(1 - normalized(mark))
+                            path.move(to: CGPoint(x: 0, y: y))
+                            path.addLine(to: CGPoint(x: geometry.size.width, y: y))
+                        }
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                    ForEach(Array(series.enumerated()), id: \.offset) { _, entry in
+                        path(for: \.minDbfs, records: entry.records, in: geometry.size)
+                            .stroke(entry.color.opacity(0.35), lineWidth: 1)
+                        path(for: \.meanDbfs, records: entry.records, in: geometry.size)
+                            .stroke(entry.color, lineWidth: 1.5)
+                    }
+                }
+                .background(Color.primary.opacity(0.04))
+            }
         }
     }
 
+    private func normalized(_ dbfs: Double) -> CGFloat {
+        CGFloat(max(0, min(1, (dbfs - Levels.floorDbfs) / (0 - Levels.floorDbfs))))
+    }
+
     private func path(
-        for keyPath: KeyPath<SecondRecord, Double>, in size: CGSize
+        for keyPath: KeyPath<SecondRecord, Double>, records: [SecondRecord], in size: CGSize
     ) -> Path {
         Path { path in
             guard records.count > 1 else { return }
             let stepX = size.width / CGFloat(records.count - 1)
-
             for (index, record) in records.enumerated() {
-                let normalized = (record[keyPath: keyPath] - Levels.floorDbfs)
-                    / (0 - Levels.floorDbfs)
-                let y = size.height * (1 - CGFloat(max(0, min(1, normalized))))
+                let y = size.height * (1 - normalized(record[keyPath: keyPath]))
                 let point = CGPoint(x: CGFloat(index) * stepX, y: y)
-                if index == 0 {
-                    path.move(to: point)
-                } else {
-                    path.addLine(to: point)
-                }
+                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
             }
         }
     }

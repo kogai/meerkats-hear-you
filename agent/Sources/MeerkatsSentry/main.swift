@@ -30,8 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionId: Int64 = 0
     private var micStreamId: Int64 = 0
 
-    /// 受信側のストリームID。**いまは読んでいない。** 分析ウインドウが1本ぶんしか
-    /// 読み口を持たないためで、2本を並べる ADR-0012 の突合で要る。
+    /// 受信側のストリームID。0 なら受信側が起きなかった。
     private var outputStreamId: Int64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -100,21 +99,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.capture = capture
             self.micStreamId = startedStreamId
 
-            // 記録が始まってから開けるようにする。ストリームIDが決まる前に開くと、
-            // 空のウインドウが出て「記録されていない」と誤解させる。
-            //
-            // **このウインドウはまだマイク側しか見せない。** 受信側の行はDBに入るが、
-            // 読み口が1本ぶんしかない。2本を並べる作業は突合(ADR-0012)と同じ形になるので、
-            // そちらでまとめて扱う。
+            startOutputTap(store: store)
+
+            // **2本とも決まってから作る。** ストリームIDが決まる前に作ると、その行を
+            // 読めないウインドウになる。受信側が起きなかった場合はマイクだけを渡す。
+            var streams: [AnalysisWindowController.Stream] = [
+                .init(id: micStreamId, kind: micConfiguration.streamKind),
+            ]
+            if outputStreamId != 0 {
+                streams.append(.init(id: outputStreamId, kind: outputConfiguration.streamKind))
+            }
             analysis = AnalysisWindowController(
-                store: store,
-                streamId: micStreamId,
-                streamKind: configuration.streamKind,
+                store: store, streams: streams,
                 frameDurationUs: configuration.frameDurationUs
             )
             menuBar?.onOpenAnalysis = { [weak self] in self?.analysis?.show() }
-
-            startOutputTap(store: store)
         } catch {
             report("記録を開始できませんでした: \(error)")
         }
