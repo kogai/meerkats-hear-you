@@ -111,12 +111,6 @@ echo "=== 署名 (identity: ${IDENTITY}) ==="
 codesign "${SIGN_ARGS[@]}" "$APP_DIR"
 codesign --verify --strict "$APP_DIR" && echo "署名の検証: OK"
 
-if [ "$IDENTITY" = "-" ]; then
-	echo
-	echo "注意: ad-hoc署名です。コードを変えて再ビルドするとTCCの許可を失い、"
-	echo "      マイクの許可ダイアログが再び出ます。開発を続けるなら自己署名証明書を用意し、"
-	echo "      SIGN_IDENTITY に指定してください。"
-fi
 
 codesign -dvvv "$APP_DIR" 2>&1 | grep -Ei "^(Identifier|CDHash|Signature)" || true
 echo
